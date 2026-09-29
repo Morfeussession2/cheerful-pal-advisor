@@ -8,3 +8,5 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+- Keep the storefront as reusable, data-driven sections in `src/components`; this preserves the extracted design while keeping the index route focused on page composition and metadata.
