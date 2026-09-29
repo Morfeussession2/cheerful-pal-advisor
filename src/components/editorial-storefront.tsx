@@ -106,7 +106,7 @@ function StoreHeader({ onSearch, onBag }: { onSearch: () => void; onBag: () => v
 
 function HeroSlider() {
   const [slide, setSlide] = useState(0);
-  const current = heroSlides[slide];
+  const current = slide === 1 ? heroSlides[1] : heroSlides[0];
   return (
     <section className="relative mt-16 overflow-hidden" aria-label="Campanhas em destaque">
       <a href={`${STORE_URL}${current.href}`} className="block">
