@@ -18,16 +18,6 @@ const NEGOTIATION_TIMEOUT_MS = 20_000;
 const ICE_SERVER_GRACE_MS = 1_000;
 const FALLBACK_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
-export type GarmentKind = "top" | "bottom" | "shoes";
-
-const PROMPTS: Record<GarmentKind, string> = {
-  top: "Substitute the current top with the outfit from the reference image, matching its color, material, and fit",
-  bottom:
-    "Substitute the current pants or shorts with the bottoms from the reference image, matching their color, material, and fit",
-  shoes:
-    "Substitute the current shoes with the footwear from the reference image, matching their color, material, and shape",
-};
-
 interface SignalingMessage {
   type?: string;
   sdp?: string;
@@ -41,7 +31,8 @@ interface SignalingMessage {
 
 export interface LucyTryOnOptions {
   localStream: MediaStream;
-  garment: GarmentKind;
+  /** Instrução para o modelo (veja buildTryOnPrompt). */
+  prompt: string;
   /** URL pública (ou data URI) da foto da peça. */
   referenceImageUrl: string;
   /** Primeiro frame da câmera como data URI, usado para iniciar a geração. */
@@ -81,7 +72,7 @@ async function fetchRealtimeToken(app: string) {
 
 export function startLucyTryOn({
   localStream,
-  garment,
+  prompt,
   referenceImageUrl,
   firstFrame,
   onRemoteStream,
@@ -202,7 +193,7 @@ export function startLucyTryOn({
 
   // A primeira mensagem abre o WebSocket e inicia a sessão no modelo.
   connection.send({
-    prompt: PROMPTS[garment],
+    prompt,
     reference_image_url: referenceImageUrl,
     ...(firstFrame ? { image_url: firstFrame } : {}),
   });

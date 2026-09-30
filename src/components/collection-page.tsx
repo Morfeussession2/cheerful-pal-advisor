@@ -29,18 +29,31 @@ const products = [
 
 type Product = (typeof products)[number];
 
-// Fotos de catálogo só da peça, em fundo neutro, usadas como referência no provador.
+// Dados do catálogo da Reserva para o provador: foto só da peça, em fundo neutro, e a
+// descrição (em inglês, para o prompt) com cor, tecido, modelagem e detalhes da ficha.
 // Os banners da vitrine têm texto e cenário, o que atrapalha o modelo de try-on.
-const TRY_ON_REFERENCE_IMAGES: Partial<Record<Product["id"], string>> = {
-  "parka-scott": "https://lojausereserva.vteximg.com.br/arquivos/ids/13338603-1024-1365/0103423036_04.jpg",
-  "jaqueta-bomber": "https://lojausereserva.vteximg.com.br/arquivos/ids/12803350-1024-1365/0102055781_04.jpg",
+const TRY_ON_DETAILS: Partial<Record<Product["id"], { imageUrl: string; description: string }>> = {
+  "parka-scott": {
+    imageUrl: "https://lojausereserva.vteximg.com.br/arquivos/ids/13338603-1024-1365/0103423036_04.jpg",
+    description:
+      "a mustard yellow waterproof parka jacket made of lightweight matte 100% polyester, regular fit, with a tall structured stand collar that hides a tucked-in hood, a front zipper covered by a snap-button placket, and four flap pockets on the chest and waist",
+  },
+  "jaqueta-bomber": {
+    imageUrl: "https://lojausereserva.vteximg.com.br/arquivos/ids/12803350-1024-1365/0102055781_04.jpg",
+    description:
+      "a caramel brown bomber jacket made of lightweight matte 100% polyester, regular fit, with a stand-up collar, a full-length front zipper, and elastic cuffs and hem",
+  },
 };
 
-function toTryOnProduct(product: Product): TryOnProduct {
+function toTryOnProduct(product: Product, size: string): TryOnProduct {
+  const details = TRY_ON_DETAILS[product.id];
   return {
     name: product.name,
-    imageUrl: TRY_ON_REFERENCE_IMAGES[product.id] ?? `${ASSET_ROOT}/${product.image}?width=1024&aspect=true&quality=90`,
+    imageUrl: details?.imageUrl ?? `${ASSET_ROOT}/${product.image}?width=1024&aspect=true&quality=90`,
+    description: details?.description,
     garment: product.garment,
+    sizes,
+    size,
   };
 }
 
@@ -54,7 +67,7 @@ function productGroup(slug: string) {
   return normalized === "mini" ? "infantil" : normalized;
 }
 
-function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBuy: (selectedSize: string) => void; onTryOn: () => void }) {
+function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBuy: (selectedSize: string) => void; onTryOn: (selectedSize: string) => void }) {
   const [selectedSize, setSelectedSize] = useState("P");
   const [startIndex, setStartIndex] = useState(0);
   const visibleSizes = sizes.slice(startIndex, startIndex + 4);
@@ -73,13 +86,13 @@ function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBu
         {startIndex === 0 ? <button type="button" aria-label="Próximos tamanhos" onClick={() => setStartIndex(1)} className="grid size-7 shrink-0 place-items-center"><ChevronRight className="size-3.5" /></button> : null}
       </div>
       <Button type="button" size="sm" className="h-9 w-full rounded-none px-2 text-xs xl:w-auto" onClick={() => onBuy(selectedSize)}>Comprar</Button>
-      <Button type="button" size="sm" variant="outline" className="h-9 w-full rounded-none px-2 text-xs xl:w-auto" onClick={onTryOn}><Sparkles className="size-3.5" />Experimentar</Button>
+      <Button type="button" size="sm" variant="outline" className="h-9 w-full rounded-none px-2 text-xs xl:w-auto" onClick={() => onTryOn(selectedSize)}><Sparkles className="size-3.5" />Experimentar</Button>
     </div>
   );
 }
 
 export function CollectionPage({ slug }: { slug: string }) {
-  const [tryOnProduct, setTryOnProduct] = useState<Product | null>(null);
+  const [tryOn, setTryOn] = useState<{ product: Product; size: string } | null>(null);
   const [tryOnOpen, setTryOnOpen] = useState(false);
   const title = displayCollectionName(slug);
   const matches = products.filter((product) => product.group === productGroup(slug));
@@ -102,7 +115,7 @@ export function CollectionPage({ slug }: { slug: string }) {
                   <img src={`${ASSET_ROOT}/${product.image}?width=768&aspect=true&quality=80`} alt={product.name} loading="lazy" className="aspect-[3/4] w-full object-cover" />
                 </a>
                 <div className="absolute inset-x-0 bottom-0 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
-                  <SizeSlider productName={product.name} onBuy={(size) => { window.location.href = `/produto/${product.id}?tamanho=${encodeURIComponent(size)}`; }} onTryOn={() => { setTryOnProduct(product); setTryOnOpen(true); }} />
+                  <SizeSlider productName={product.name} onBuy={(size) => { window.location.href = `/produto/${product.id}?tamanho=${encodeURIComponent(size)}`; }} onTryOn={(size) => { setTryOn({ product, size }); setTryOnOpen(true); }} />
                 </div>
               </div>
               <a href={`/produto/${product.id}`} className="mt-3 block text-xs leading-5 md:text-sm">{product.name}</a>
@@ -111,7 +124,7 @@ export function CollectionPage({ slug }: { slug: string }) {
           ))}
         </div>
       </section>
-      {tryOnProduct ? <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(tryOnProduct)} onOpenChange={setTryOnOpen} /> : null}
+      {tryOn ? <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(tryOn.product, tryOn.size)} onOpenChange={setTryOnOpen} /> : null}
     </main>
   );
 }
@@ -154,7 +167,7 @@ export function ProductDetailPage({ productId, initialSize }: { productId: strin
           </section>
         </div>
       </section>
-      <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(product)} onOpenChange={setTryOnOpen} />
+      <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(product, selectedSize)} onOpenChange={setTryOnOpen} />
     </main>
   );
 }

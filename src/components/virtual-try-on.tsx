@@ -16,13 +16,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { startLucyTryOn, type GarmentKind, type LucyTryOnSession } from "@/lib/lucy-vton";
+import { startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
+import { buildTryOnPrompt, type GarmentKind } from "@/lib/try-on-prompt";
 
 export interface TryOnProduct {
   name: string;
   /** Foto da peça, usada como referência pelo modelo. */
   imageUrl: string;
   garment: GarmentKind;
+  /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
+  description?: string | undefined;
+  /** Grade de tamanhos, do menor para o maior. */
+  sizes: readonly string[];
+  /** Tamanho escolhido na página do produto. */
+  size: string;
 }
 
 interface VirtualTryOnProps {
@@ -31,7 +38,8 @@ interface VirtualTryOnProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type Phase = "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
+type Phase =
+  "sizes" | "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
 type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 
 // Tempo para a pessoa se afastar do celular depois de tocar em "Começar".
@@ -39,6 +47,79 @@ const POSITIONING_SECONDS = 5;
 // Duração máxima da gravação (e da sessão realtime, que a fal.ai cobra por segundo).
 const MAX_SESSION_SECONDS = 5;
 const RECORDER_TYPES = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
+const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
+
+// O tamanho habitual é só uma conveniência deste aparelho; sem storage, a pessoa escolhe de novo.
+function readUsualSize() {
+  try {
+    return window.localStorage.getItem(USUAL_SIZE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveUsualSize(size: string | null) {
+  try {
+    if (size) window.localStorage.setItem(USUAL_SIZE_KEY, size);
+    else window.localStorage.removeItem(USUAL_SIZE_KEY);
+  } catch {
+    // Sem storage disponível: segue sem lembrar.
+  }
+}
+
+function fitLabel(sizeOffset: number | undefined) {
+  if (sizeOffset === undefined) return "Sem o seu tamanho, mostramos o caimento padrão da peça.";
+  if (sizeOffset <= -2) return "Bem justa: dois ou mais tamanhos abaixo do seu.";
+  if (sizeOffset === -1) return "Mais justa: um tamanho abaixo do seu.";
+  if (sizeOffset === 0) return "No seu tamanho: caimento natural da peça.";
+  if (sizeOffset === 1) return "Mais folgada: um tamanho acima do seu.";
+  return "Bem larga: dois ou mais tamanhos acima do seu.";
+}
+
+function SizeOptions({
+  label,
+  sizes,
+  value,
+  onChange,
+  allowUnknown = false,
+}: {
+  label: string;
+  sizes: readonly string[];
+  value: string | null;
+  onChange: (size: string | null) => void;
+  allowUnknown?: boolean;
+}) {
+  const chip = (selected: boolean) =>
+    `h-11 min-w-11 rounded-full border px-3 text-xs ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background"}`;
+  return (
+    <fieldset>
+      <legend className="text-sm font-medium">{label}</legend>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {sizes.map((size) => (
+          <button
+            key={size}
+            type="button"
+            aria-pressed={value === size}
+            onClick={() => onChange(size)}
+            className={chip(value === size)}
+          >
+            {size}
+          </button>
+        ))}
+        {allowUnknown ? (
+          <button
+            type="button"
+            aria-pressed={value === null}
+            onClick={() => onChange(null)}
+            className={chip(value === null)}
+          >
+            Não sei
+          </button>
+        ) : null}
+      </div>
+    </fieldset>
+  );
+}
 
 // Para o gravador sem gerar o vídeo final.
 function discardRecorder(recorder: MediaRecorder | null) {
@@ -95,9 +176,16 @@ function StageMessage({ children }: { children: ReactNode }) {
 export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps) {
   const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
   const steps = tutorialSteps(framing);
+  // Calçados não usam a grade P–GGG, então não há simulação de caimento.
+  const simulatesFit = product.garment !== "shoes";
+  const firstPhase: Phase = simulatesFit ? "sizes" : "tutorial";
 
-  const [phase, setPhase] = useState<Phase>("tutorial");
+  const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
+  const [trySize, setTrySize] = useState(product.size);
+  const [usualSize, setUsualSize] = useState<string | null>(null);
+  // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
+  const [skipTutorial, setSkipTutorial] = useState(false);
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
   const [countdown, setCountdown] = useState(POSITIONING_SECONDS);
   const [secondsLeft, setSecondsLeft] = useState(MAX_SESSION_SECONDS);
@@ -157,19 +245,24 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
 
   useEffect(() => {
     openRef.current = open;
-    if (open) return;
+    if (open) {
+      setTrySize(product.size);
+      setUsualSize(readUsualSize());
+      return;
+    }
     teardown();
     setResult((current) => {
       if (current) URL.revokeObjectURL(current.url);
       return null;
     });
     setResultPending(false);
-    setPhase("tutorial");
+    setPhase(firstPhase);
     setTutorialStep(0);
+    setSkipTutorial(false);
     setCameraStatus("idle");
     setRemoteStream(null);
     setError("");
-  }, [open, teardown]);
+  }, [open, teardown, product.size, firstPhase]);
 
   useEffect(() => teardown, [teardown]);
 
@@ -204,6 +297,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
 
   const openCamera = async () => {
     setPhase("camera");
+    setSkipTutorial(true);
     setError("");
     if (localStreamRef.current) {
       setCameraStatus("ready");
@@ -242,6 +336,17 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     setPhase("tutorial");
   };
 
+  const showSizes = () => {
+    releaseCamera();
+    setPhase("sizes");
+  };
+
+  const confirmSizes = () => {
+    saveUsualSize(usualSize);
+    if (skipTutorial) void openCamera();
+    else setPhase("tutorial");
+  };
+
   const startCountdown = () => {
     setError("");
     setCountdown(POSITIONING_SECONDS);
@@ -266,9 +371,15 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
       return;
     }
     setPhase("connecting");
+    const prompt = buildTryOnPrompt({
+      garment: product.garment,
+      description: product.description,
+      sizeOffset: simulatesFit ? sizeOffset : undefined,
+    });
+    if (import.meta.env.DEV) console.info("Lucy VTON prompt:", prompt);
     sessionRef.current = startLucyTryOn({
       localStream: stream,
-      garment: product.garment,
+      prompt,
       referenceImageUrl: product.imageUrl,
       firstFrame: captureFrame(localVideoRef.current),
       onRemoteStream: setRemoteStream,
@@ -354,6 +465,10 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     void openCamera();
   };
 
+  const tryIndex = product.sizes.indexOf(trySize);
+  const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
+  const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
+
   const step = steps[tutorialStep] ?? steps[0]!;
   const isLastStep = tutorialStep === steps.length - 1;
   const showLocalVideo = cameraStatus === "ready" && phase !== "result";
@@ -370,7 +485,52 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        {phase === "tutorial" ? (
+        {phase === "sizes" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <div className="flex gap-4">
+                <img
+                  src={product.imageUrl}
+                  alt=""
+                  className="h-28 w-21 shrink-0 bg-muted object-cover"
+                />
+                <div>
+                  <h3 className="text-xl font-medium">Escolha os tamanhos</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais
+                    justa ou mais folgada em você.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-7 space-y-6">
+                <SizeOptions
+                  label="Tamanho para experimentar"
+                  sizes={product.sizes}
+                  value={trySize}
+                  onChange={(size) => size && setTrySize(size)}
+                />
+                <SizeOptions
+                  label="Tamanho que você costuma usar"
+                  sizes={product.sizes}
+                  value={usualSize}
+                  onChange={setUsualSize}
+                  allowUnknown
+                />
+              </div>
+              <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
+                {fitLabel(sizeOffset)}
+              </p>
+              <p className="mt-3 text-xs text-muted-foreground">
+                O caimento é uma simulação aproximada: a IA não mede o seu corpo.
+              </p>
+            </div>
+            <div className="shrink-0 border-t border-border p-4">
+              <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>
+                Continuar
+              </Button>
+            </div>
+          </div>
+        ) : phase === "tutorial" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
               <div className="mx-auto aspect-[10/7] w-full max-w-xs bg-muted p-4 text-foreground">
@@ -573,6 +733,19 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
             <div className="shrink-0 border-t border-border p-4">
               {phase === "camera" && cameraStatus === "ready" ? (
                 <>
+                  {simulatesFit ? (
+                    <p className="mb-2 text-center text-xs">
+                      Tamanho {trySize}
+                      {usualSize ? ` · você usa ${usualSize}` : ""} ·{" "}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={showSizes}
+                      >
+                        Alterar
+                      </button>
+                    </p>
+                  ) : null}
                   <p className="mb-3 text-center text-xs text-muted-foreground">
                     Ao tocar em Começar, você tem {POSITIONING_SECONDS}s para se posicionar. Depois
                     gravamos {MAX_SESSION_SECONDS}s com a roupa aplicada.
