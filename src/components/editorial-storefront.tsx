@@ -13,6 +13,11 @@ const STORE_URL = "https://www.usereserva.com";
 const ASSET_ROOT =
   "https://lojausereserva.vtexassets.com/assets/vtex.file-manager-graphql/images";
 
+function collectionHref(href: string) {
+  if (href.startsWith("/faca-vc/") || href.endsWith("/p")) return `${STORE_URL}${href}`;
+  return `/colecoes/${href.replace(/^\/+/, "")}`;
+}
+
 const navItems = [
   ["Última Chance", "/dia-do-cliente"],
   ["Novidades", "/colecao-reserva-novidades"],
@@ -76,7 +81,7 @@ function StoreHeader({ onSearch, onBag }: { onSearch: () => void; onBag: () => v
             <ul className="flex items-center gap-5 overflow-hidden">
               {navItems.map(([label, href], index) => (
                 <li key={href} className="shrink-0">
-                  <a href={`${STORE_URL}${href}`} className={index === 0 ? "text-sm text-sale hover:opacity-60" : "text-sm text-foreground hover:opacity-60"}>{label}</a>
+                  <a href={collectionHref(href)} className={index === 0 ? "text-sm text-sale hover:opacity-60" : "text-sm text-foreground hover:opacity-60"}>{label}</a>
                 </li>
               ))}
             </ul>
@@ -96,7 +101,7 @@ function StoreHeader({ onSearch, onBag }: { onSearch: () => void; onBag: () => v
           <IconButton label="Fechar menu" onClick={() => setMenuOpen(false)}><X className="size-5" /></IconButton>
         </div>
         <nav className="flex-1 overflow-y-auto py-3">
-          {navItems.map(([label, href], index) => <a key={href} href={`${STORE_URL}${href}`} className={`flex min-h-14 items-center justify-between px-6 text-[13px] uppercase ${index === 0 ? "text-sale" : "text-foreground"}`}><span>{label}</span><ArrowRight className="size-4" strokeWidth={1.4} /></a>)}
+          {navItems.map(([label, href], index) => <a key={href} href={collectionHref(href)} className={`flex min-h-14 items-center justify-between px-6 text-[13px] uppercase ${index === 0 ? "text-sale" : "text-foreground"}`}><span>{label}</span><ArrowRight className="size-4" strokeWidth={1.4} /></a>)}
         </nav>
         <div className="grid h-16 grid-cols-2 border-t border-border"><a href={`${STORE_URL}/api/io/account#/orders`} className="flex items-center justify-center gap-2 border-r border-border text-xs"><ShoppingBag className="size-4" />Pedidos</a><a href={`${STORE_URL}/login`} className="flex items-center justify-center gap-2 text-xs"><UserRound className="size-4" />Conta</a></div>
       </aside>
@@ -109,7 +114,7 @@ function HeroSlider() {
   const current = slide === 1 ? heroSlides[1] : heroSlides[0];
   return (
     <section className="relative mt-16 overflow-hidden" aria-label="Campanhas em destaque">
-      <a href={`${STORE_URL}${current.href}`} className="block">
+      <a href={collectionHref(current.href)} className="block">
         <picture>
           <source media="(max-width: 768px)" srcSet={current.mobile} />
           <img src={current.desktop} alt={current.alt} className="aspect-[3/4] w-full object-cover md:aspect-[16/9]" fetchPriority="high" />
@@ -132,7 +137,7 @@ function Highlights() {
       <h2 id="highlights-title" className="mb-5 text-2xl font-medium md:text-3xl">Destaques</h2>
       <div ref={rail} className="grid snap-x auto-cols-[76vw] grid-flow-col gap-2 overflow-x-auto pr-4 [scrollbar-width:none] md:auto-cols-[30vw] md:pr-14">
         {highlights.map(([label, href, file]) => (
-          <a key={href} href={`${STORE_URL}${href}`} className="group snap-start overflow-hidden" aria-label={label}>
+          <a key={href} href={collectionHref(href)} className="group snap-start overflow-hidden" aria-label={label}>
             <div className="aspect-[3/4] overflow-hidden bg-muted"><img src={`${ASSET_ROOT}/${file}?width=768&aspect=true&quality=80`} alt={label} loading="lazy" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]" /></div>
           </a>
         ))}
