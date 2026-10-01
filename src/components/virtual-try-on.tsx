@@ -1,17 +1,13 @@
-import {
-  Camera,
-  Check,
-  Image as ImageIcon,
-  LoaderCircle,
-  Plus,
-  RefreshCcw,
-  Share2,
-  Trash2,
-  Upload,
-  Video,
-} from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Camera, CircleStop, Download, LoaderCircle, RefreshCcw, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import {
+  BodyGuide,
+  DistanceIllustration,
+  LightIllustration,
+  PhoneStandIllustration,
+  type TryOnFraming,
+} from "@/components/try-on-illustrations";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,383 +16,844 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
+import { buildTryOnPrompt, type GarmentKind } from "@/lib/try-on-prompt";
 
-type CaptureState = "choosing" | "camera" | "recording" | "preview" | "ready";
-
-interface SelectedMedia {
-  kind: "image" | "video";
-  url: string;
+export interface TryOnProduct {
   name: string;
+  /** Foto da peça, usada como referência pelo modelo. */
+  imageUrl: string;
+  garment: GarmentKind;
+  /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
+  description?: string | undefined;
+  /** Grade de tamanhos, do menor para o maior. */
+  sizes: readonly string[];
+  /** Tamanho escolhido na página do produto. */
+  size: string;
 }
 
 interface VirtualTryOnProps {
   open: boolean;
-  productName: string;
+  product: TryOnProduct;
   onOpenChange: (open: boolean) => void;
 }
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const MAX_IMAGES = 3;
+type Phase =
+  "sizes" | "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
+type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 
-export function VirtualTryOn({ open, productName, onOpenChange }: VirtualTryOnProps) {
-  const [captureState, setCaptureState] = useState<CaptureState>("choosing");
-  const [cameraStatus, setCameraStatus] = useState<"idle" | "requesting" | "ready" | "denied" | "unavailable">("idle");
-  const [secondsLeft, setSecondsLeft] = useState(5);
-  const [images, setImages] = useState<SelectedMedia[]>([]);
-  const [video, setVideo] = useState<SelectedMedia | null>(null);
+// Tempo para a pessoa se afastar do celular depois de tocar em "Começar".
+const POSITIONING_SECONDS = 5;
+// Duração máxima da gravação (e da sessão realtime, que a fal.ai cobra por segundo).
+const MAX_SESSION_SECONDS = 5;
+const RECORDER_TYPES = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
+const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
+
+// O tamanho habitual é só uma conveniência deste aparelho; sem storage, a pessoa escolhe de novo.
+function readUsualSize() {
+  try {
+    return window.localStorage.getItem(USUAL_SIZE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveUsualSize(size: string | null) {
+  try {
+    if (size) window.localStorage.setItem(USUAL_SIZE_KEY, size);
+    else window.localStorage.removeItem(USUAL_SIZE_KEY);
+  } catch {
+    // Sem storage disponível: segue sem lembrar.
+  }
+}
+
+function fitLabel(sizeOffset: number | undefined) {
+  if (sizeOffset === undefined) return "Sem o seu tamanho, mostramos o caimento padrão da peça.";
+  if (sizeOffset <= -2) return "Bem justa: dois ou mais tamanhos abaixo do seu.";
+  if (sizeOffset === -1) return "Mais justa: um tamanho abaixo do seu.";
+  if (sizeOffset === 0) return "No seu tamanho: caimento natural da peça.";
+  if (sizeOffset === 1) return "Mais folgada: um tamanho acima do seu.";
+  return "Bem larga: dois ou mais tamanhos acima do seu.";
+}
+
+function SizeOptions({
+  label,
+  sizes,
+  value,
+  onChange,
+  allowUnknown = false,
+}: {
+  label: string;
+  sizes: readonly string[];
+  value: string | null;
+  onChange: (size: string | null) => void;
+  allowUnknown?: boolean;
+}) {
+  const chip = (selected: boolean) =>
+    `h-11 min-w-11 rounded-full border px-3 text-xs ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background"}`;
+  return (
+    <fieldset>
+      <legend className="text-sm font-medium">{label}</legend>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {sizes.map((size) => (
+          <button
+            key={size}
+            type="button"
+            aria-pressed={value === size}
+            onClick={() => onChange(size)}
+            className={chip(value === size)}
+          >
+            {size}
+          </button>
+        ))}
+        {allowUnknown ? (
+          <button
+            type="button"
+            aria-pressed={value === null}
+            onClick={() => onChange(null)}
+            className={chip(value === null)}
+          >
+            Não sei
+          </button>
+        ) : null}
+      </div>
+    </fieldset>
+  );
+}
+
+// Para o gravador sem gerar o vídeo final.
+function discardRecorder(recorder: MediaRecorder | null) {
+  if (!recorder) return;
+  recorder.ondataavailable = null;
+  recorder.onstop = null;
+  if (recorder.state !== "inactive") recorder.stop();
+}
+
+function captureFrame(video: HTMLVideoElement | null) {
+  if (!video?.videoWidth) return undefined;
+  const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+function tutorialSteps(framing: TryOnFraming) {
+  return [
+    {
+      title: "Apoie o celular em pé",
+      text: "Encoste o celular na vertical numa parede, estante ou pilha de livros, mais ou menos na altura da cintura, com a câmera frontal virada para você.",
+      illustration: <PhoneStandIllustration className="h-full w-full" />,
+    },
+    {
+      title: "Afaste-se",
+      text:
+        framing === "upper"
+          ? "Dê um ou dois passos para trás, até aparecer da cabeça ao quadril."
+          : "Dê três ou quatro passos para trás, até aparecer da cabeça aos pés.",
+      illustration: <DistanceIllustration framing={framing} className="h-full w-full" />,
+    },
+    {
+      title: "Capriche na luz",
+      text: "Fique de frente para a luz, com um fundo liso atrás. Evite bolsas, casacos abertos ou braços cruzados na frente do corpo.",
+      illustration: <LightIllustration className="h-full w-full" />,
+    },
+  ];
+}
+
+function StageMessage({ children }: { children: ReactNode }) {
+  return (
+    <div
+      role="status"
+      className="absolute inset-0 grid place-items-center bg-black/55 px-8 text-center text-white"
+    >
+      <div>{children}</div>
+    </div>
+  );
+}
+
+export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps) {
+  const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
+  const steps = tutorialSteps(framing);
+  // Calçados não usam a grade P–GGG, então não há simulação de caimento.
+  const simulatesFit = product.garment !== "shoes";
+  const firstPhase: Phase = simulatesFit ? "sizes" : "tutorial";
+
+  const [phase, setPhase] = useState<Phase>(firstPhase);
+  const [tutorialStep, setTutorialStep] = useState(0);
+  const [trySize, setTrySize] = useState(product.size);
+  const [usualSize, setUsualSize] = useState<string | null>(null);
+  // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
+  const [skipTutorial, setSkipTutorial] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
+  const [countdown, setCountdown] = useState(POSITIONING_SECONDS);
+  const [secondsLeft, setSecondsLeft] = useState(MAX_SESSION_SECONDS);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [result, setResult] = useState<{ url: string; extension: string } | null>(null);
+  const [resultPending, setResultPending] = useState(false);
   const [error, setError] = useState("");
-  const [sharing, setSharing] = useState(false);
-  const streamRef = useRef<MediaStream | null>(null);
+
+  const openRef = useRef(open);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const sessionRef = useRef<LucyTryOnSession | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const releaseCamera = useCallback(() => {
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current);
-      countdownRef.current = null;
-    }
-    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
+  const stopTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+  };
+
+  const closeSession = () => {
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    setRemoteStream(null);
+  };
+
+  const discardRecording = () => {
+    discardRecorder(recorderRef.current);
     recorderRef.current = null;
-  }, []);
+  };
 
-  const clearMedia = useCallback(() => {
-    setImages((current) => {
-      current.forEach((item) => URL.revokeObjectURL(item.url));
-      return [];
-    });
-    setVideo((current) => {
+  const releaseCamera = () => {
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    setCameraStatus("idle");
+  };
+
+  const clearResult = () => {
+    setResult((current) => {
       if (current) URL.revokeObjectURL(current.url);
       return null;
     });
+    setResultPending(false);
+  };
+
+  const teardown = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    discardRecorder(recorderRef.current);
+    recorderRef.current = null;
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
   }, []);
 
-  const reset = useCallback(() => {
-    releaseCamera();
-    clearMedia();
-    setCaptureState("choosing");
-    setCameraStatus("idle");
-    setSecondsLeft(5);
-    setError("");
-    setSharing(false);
-  }, [clearMedia, releaseCamera]);
-
   useEffect(() => {
-    if (!open) reset();
-    return () => {
-      releaseCamera();
-    };
-  }, [open, releaseCamera, reset]);
-
-  useEffect(() => {
-    if (cameraStatus === "ready" && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      void videoRef.current.play();
+    openRef.current = open;
+    if (open) {
+      setTrySize(product.size);
+      setUsualSize(readUsualSize());
+      return;
     }
-  }, [cameraStatus, captureState]);
-
-  const requestCamera = async () => {
-    setCaptureState("camera");
-    setCameraStatus("requesting");
+    teardown();
+    setResult((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
+    setResultPending(false);
+    setPhase(firstPhase);
+    setTutorialStep(0);
+    setSkipTutorial(false);
+    setCameraStatus("idle");
+    setRemoteStream(null);
     setError("");
+  }, [open, teardown, product.size, firstPhase]);
+
+  useEffect(() => teardown, [teardown]);
+
+  useEffect(() => {
+    const video = localVideoRef.current;
+    const stream = localStreamRef.current;
+    if (cameraStatus === "ready" && video && stream && video.srcObject !== stream) {
+      video.srcObject = stream;
+      void video.play().catch(() => undefined);
+    }
+  }, [cameraStatus, phase]);
+
+  useEffect(() => {
+    const video = remoteVideoRef.current;
+    if (video && remoteStream && video.srcObject !== remoteStream) {
+      video.srcObject = remoteStream;
+      void video.play().catch(() => undefined);
+    }
+  }, [remoteStream]);
+
+  // Sair da aba ou bloquear a tela não pode deixar a sessão (e a cobrança) rodando.
+  useEffect(() => {
+    if (phase !== "countdown" && phase !== "connecting" && phase !== "live") return;
+    const onVisibilityChange = () => {
+      if (!document.hidden) return;
+      if (phase === "live") finish();
+      else backToCamera();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  });
+
+  const openCamera = async () => {
+    setPhase("camera");
+    setSkipTutorial(true);
+    setError("");
+    if (localStreamRef.current) {
+      setCameraStatus("ready");
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraStatus("unavailable");
       return;
     }
+    setCameraStatus("requesting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 1080 }, height: { ideal: 1350 } },
+        video: {
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30, max: 30 },
+        },
         audio: false,
       });
-      streamRef.current = stream;
-      setCameraStatus("ready");
-    } catch (cameraError) {
-      const isDenied = cameraError instanceof DOMException && cameraError.name === "NotAllowedError";
-      setCameraStatus(isDenied ? "denied" : "unavailable");
-    }
-  };
-
-  const addImages = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
-    if (!files.length) return;
-
-    const invalid = files.find((file) => !file.type.startsWith("image/"));
-    if (invalid) {
-      setError("Escolha apenas arquivos de imagem (JPG, PNG ou WebP).");
-      return;
-    }
-    const oversized = files.find((file) => file.size > MAX_FILE_SIZE);
-    if (oversized) {
-      setError("Cada arquivo precisa ter no máximo 50 MB.");
-      return;
-    }
-
-    setError("");
-    setVideo((current) => {
-      if (current) URL.revokeObjectURL(current.url);
-      return null;
-    });
-    setImages((current) => {
-      const available = MAX_IMAGES - current.length;
-      if (files.length > available) {
-        setError(`Você pode usar no máximo ${MAX_IMAGES} fotos.`);
-      }
-      const accepted = files.slice(0, Math.max(available, 0));
-      return [
-        ...current,
-        ...accepted.map((file) => ({ kind: "image" as const, url: URL.createObjectURL(file), name: file.name })),
-      ];
-    });
-    setCaptureState("preview");
-  };
-
-  const useVideoFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (!file.type.startsWith("video/")) {
-      setError("Escolha um arquivo de vídeo válido.");
-      return;
-    }
-    if (file.size > MAX_FILE_SIZE) {
-      setError("O arquivo precisa ter no máximo 50 MB.");
-      return;
-    }
-    clearMedia();
-    setError("");
-    setVideo({ kind: "video", url: URL.createObjectURL(file), name: file.name });
-    setCaptureState("preview");
-  };
-
-  const removeImage = (url: string) => {
-    setImages((current) => {
-      const target = current.find((item) => item.url === url);
-      if (target) URL.revokeObjectURL(target.url);
-      return current.filter((item) => item.url !== url);
-    });
-  };
-
-  const startRecording = () => {
-    const stream = streamRef.current;
-    if (!stream || typeof MediaRecorder === "undefined") {
-      setError("A gravação não é compatível com este navegador. Envie uma foto ou vídeo.");
-      return;
-    }
-
-    recordedChunksRef.current = [];
-    const preferredType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-      ? "video/webm;codecs=vp9"
-      : "video/webm";
-    const recorder = new MediaRecorder(stream, { mimeType: preferredType });
-    recorderRef.current = recorder;
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) recordedChunksRef.current.push(event.data);
-    };
-    recorder.onstop = () => {
-      const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType });
-      if (!blob.size) {
-        setError("Não foi possível concluir a gravação. Tente novamente.");
-        setCaptureState("camera");
+      if (!openRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      clearMedia();
-      setVideo({ kind: "video", url: URL.createObjectURL(blob), name: "provador-5s.webm" });
-      releaseCamera();
-      setCaptureState("preview");
-    };
-    setSecondsLeft(5);
-    setCaptureState("recording");
-    recorder.start();
-    countdownRef.current = setInterval(() => {
-      setSecondsLeft((current) => {
-        if (current <= 1) {
-          if (countdownRef.current) clearInterval(countdownRef.current);
-          countdownRef.current = null;
-          if (recorder.state === "recording") recorder.stop();
-          return 0;
-        }
-        return current - 1;
-      });
+      localStreamRef.current = stream;
+      setCameraStatus("ready");
+    } catch (cameraError) {
+      const denied = cameraError instanceof DOMException && cameraError.name === "NotAllowedError";
+      setCameraStatus(denied ? "denied" : "unavailable");
+    }
+  };
+
+  const showTutorial = () => {
+    releaseCamera();
+    setTutorialStep(0);
+    setPhase("tutorial");
+  };
+
+  const showSizes = () => {
+    releaseCamera();
+    setPhase("sizes");
+  };
+
+  const confirmSizes = () => {
+    saveUsualSize(usualSize);
+    if (skipTutorial) void openCamera();
+    else setPhase("tutorial");
+  };
+
+  const startCountdown = () => {
+    setError("");
+    setCountdown(POSITIONING_SECONDS);
+    setPhase("countdown");
+    let remaining = POSITIONING_SECONDS;
+    timerRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setCountdown(remaining);
+        return;
+      }
+      stopTimer();
+      connect();
     }, 1000);
   };
 
-  const cancelCamera = () => {
+  // Só aqui a câmera passa a ser transmitida e a sessão da fal.ai começa a contar.
+  const connect = () => {
+    const stream = localStreamRef.current;
+    if (!stream) {
+      void openCamera();
+      return;
+    }
+    setPhase("connecting");
+    const prompt = buildTryOnPrompt({
+      garment: product.garment,
+      description: product.description,
+      sizeOffset: simulatesFit ? sizeOffset : undefined,
+    });
+    if (import.meta.env.DEV) console.info("Lucy VTON prompt:", prompt);
+    sessionRef.current = startLucyTryOn({
+      localStream: stream,
+      prompt,
+      referenceImageUrl: product.imageUrl,
+      firstFrame: captureFrame(localVideoRef.current),
+      onRemoteStream: setRemoteStream,
+      onError: (sessionError) => {
+        console.error("Lucy VTON:", sessionError);
+        sessionRef.current = null;
+        if (recorderRef.current) {
+          finish();
+          setError("A conexão caiu no meio da sessão. Salvamos o que foi gravado até ali.");
+          return;
+        }
+        stopTimer();
+        setRemoteStream(null);
+        setError("Não conseguimos conectar ao provador. Verifique sua internet e tente novamente.");
+        setPhase("error");
+      },
+    });
+  };
+
+  const startRecording = (stream: MediaStream) => {
+    if (typeof MediaRecorder === "undefined") return;
+    const mimeType = RECORDER_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
+    if (!mimeType) return;
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, { mimeType });
+    } catch {
+      return;
+    }
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      setResultPending(false);
+      if (!chunks.length) return;
+      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
+      setResult({
+        url: URL.createObjectURL(blob),
+        extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm",
+      });
+    };
+    recorder.start(1000);
+    recorderRef.current = recorder;
+  };
+
+  // Disparado quando o vídeo com a roupa aplicada começa a tocar.
+  const goLive = () => {
+    if (phase !== "connecting" || !remoteStream) return;
+    setPhase("live");
+    startRecording(remoteStream);
+    let remaining = MAX_SESSION_SECONDS;
+    setSecondsLeft(remaining);
+    timerRef.current = setInterval(() => {
+      remaining -= 1;
+      setSecondsLeft(remaining);
+      if (remaining <= 0) finish();
+    }, 1000);
+  };
+
+  const finish = () => {
+    stopTimer();
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    if (recorder && recorder.state !== "inactive") {
+      setResultPending(true);
+      recorder.stop();
+    }
+    closeSession();
     releaseCamera();
-    setCameraStatus("idle");
-    setCaptureState("choosing");
-    setSecondsLeft(5);
+    setPhase("result");
+  };
+
+  const backToCamera = () => {
+    stopTimer();
+    discardRecording();
+    closeSession();
+    setPhase("camera");
   };
 
   const tryAgain = () => {
-    clearMedia();
-    setCaptureState("choosing");
-    setError("");
+    clearResult();
+    void openCamera();
   };
 
-  const shareOrDownload = async (media: SelectedMedia) => {
-    setSharing(true);
-    setError("");
-    try {
-      const blob = await fetch(media.url).then((response) => response.blob());
-      const file = new File([blob], media.name, { type: blob.type });
-      if (typeof navigator.canShare === "function" && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({ files: [file], title: productName });
-          return;
-        } catch (shareError) {
-          if (shareError instanceof DOMException && shareError.name === "AbortError") return;
-        }
-      }
-      const anchor = document.createElement("a");
-      anchor.href = media.url;
-      anchor.download = media.name;
-      anchor.rel = "noopener";
-      anchor.click();
-    } catch {
-      setError("Não foi possível compartilhar o arquivo agora. Tente novamente.");
-    } finally {
-      setSharing(false);
-    }
-  };
+  const tryIndex = product.sizes.indexOf(trySize);
+  const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
+  const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
 
-  const hasMedia = images.length > 0 || video !== null;
+  const step = steps[tutorialStep] ?? steps[0]!;
+  const isLastStep = tutorialStep === steps.length - 1;
+  const showLocalVideo = cameraStatus === "ready" && phase !== "result";
+  const guideText =
+    framing === "upper"
+      ? "Encaixe cabeça, ombros e tronco na silhueta"
+      : "Encaixe o corpo inteiro na silhueta";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92dvh] w-[calc(100%-1rem)] max-w-2xl overflow-y-auto border-border p-0 sm:w-[calc(100%-2rem)] sm:rounded-none">
-        <DialogHeader className="border-b border-border px-4 py-4 pr-12 sm:px-7 sm:py-5">
-          <DialogTitle className="text-lg font-medium sm:text-xl">Experimentar virtualmente</DialogTitle>
-          <DialogDescription className="line-clamp-1">{productName}</DialogDescription>
+      <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(880px,94dvh)] sm:max-w-md sm:rounded-none sm:border">
+        <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
+          <DialogTitle className="text-lg font-medium">Experimentar virtualmente</DialogTitle>
+          <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        <div className="p-4 sm:p-7">
-          {captureState === "choosing" ? (
-            <div>
-              <p className="text-[13px] text-muted-foreground sm:text-sm">
-                Escolha até {MAX_IMAGES} fotos suas (de frente, corpo visível) ou um vídeo curto. Elas serão usadas pela IA para vestir a peça em você.
-              </p>
-              <div className="mt-5 grid grid-cols-1 gap-2 min-[420px]:grid-cols-3 sm:mt-6 sm:gap-3">
-                <Button type="button" variant="outline" className="h-24 flex-col gap-2 whitespace-normal sm:h-32 sm:gap-3" onClick={() => imageInputRef.current?.click()}>
-                  <ImageIcon className="size-5 sm:size-6" />
-                  <span className="text-[13px] sm:text-sm">Enviar fotos</span>
-                  <span className="text-[11px] font-normal text-muted-foreground sm:text-xs">Até {MAX_IMAGES} imagens</span>
-                </Button>
-                <Button type="button" variant="outline" className="h-24 flex-col gap-2 whitespace-normal sm:h-32 sm:gap-3" onClick={() => videoInputRef.current?.click()}>
-                  <Upload className="size-5 sm:size-6" />
-                  <span className="text-[13px] sm:text-sm">Enviar vídeo</span>
-                  <span className="text-[11px] font-normal text-muted-foreground sm:text-xs">Até 50 MB</span>
-                </Button>
-                <Button type="button" variant="outline" className="h-24 flex-col gap-2 whitespace-normal sm:h-32 sm:gap-3" onClick={() => void requestCamera()}>
-                  <Camera className="size-5 sm:size-6" />
-                  <span className="text-[13px] sm:text-sm">Usar câmera</span>
-                  <span className="text-[11px] font-normal text-muted-foreground sm:text-xs">Gravar 5 segundos</span>
-                </Button>
-              </div>
-              <p className="mt-5 flex items-start gap-2 text-[11px] text-muted-foreground sm:mt-6 sm:text-xs">
-                <Camera className="mt-0.5 size-4 shrink-0" />
-                A câmera só é acessada com sua permissão e nada é enviado nesta etapa.
-              </p>
-            </div>
-          ) : null}
-
-          {captureState === "camera" || captureState === "recording" ? (
-            <div>
-              <div className="relative mx-auto aspect-[4/5] max-h-[52dvh] overflow-hidden bg-foreground sm:max-h-[58dvh]">
-                {cameraStatus === "ready" ? <video ref={videoRef} muted playsInline className="h-full w-full scale-x-[-1] object-cover" /> : null}
-                {cameraStatus === "requesting" ? <div className="absolute inset-0 grid place-items-center text-center text-primary-foreground"><div><LoaderCircle className="mx-auto size-8 animate-spin" /><p className="mt-3 text-[13px] sm:text-sm">Aguardando permissão da câmera…</p></div></div> : null}
-                {cameraStatus === "denied" || cameraStatus === "unavailable" ? <div className="absolute inset-0 grid place-items-center px-6 text-center text-primary-foreground sm:px-8"><div><Camera className="mx-auto size-9" /><p className="mt-4 text-sm font-medium sm:text-base">{cameraStatus === "denied" ? "Permissão da câmera bloqueada" : "Câmera indisponível"}</p><p className="mt-2 text-[13px] opacity-80 sm:text-sm">{cameraStatus === "denied" ? "Libere o acesso nas configurações do navegador ou envie um arquivo." : "Envie uma foto ou vídeo para continuar."}</p></div></div> : null}
-                {captureState === "recording" ? <div className="absolute inset-x-0 top-4 flex justify-center"><span className="flex items-center gap-2 bg-background px-3 py-2 text-[13px] font-medium text-foreground sm:text-sm"><span className="size-2 animate-pulse rounded-full bg-destructive" />Gravando · {secondsLeft}s</span></div> : null}
-                {captureState === "recording" ? <div className="absolute inset-x-0 bottom-0 h-1 bg-background/40"><div className="h-full bg-destructive transition-[width] duration-1000" style={{ width: `${((5 - secondsLeft) / 5) * 100}%` }} /></div> : null}
-              </div>
-              <div className="mt-4 flex flex-col gap-2 sm:mt-5 sm:flex-row sm:justify-center">
-                {cameraStatus === "ready" && captureState !== "recording" ? <Button type="button" size="lg" className="w-full sm:w-auto" onClick={startRecording}><Video />Gravar 5 segundos</Button> : null}
-                {cameraStatus === "denied" || cameraStatus === "unavailable" ? <Button type="button" variant="outline" size="lg" className="w-full sm:w-auto" onClick={() => imageInputRef.current?.click()}><Upload />Enviar fotos</Button> : null}
-                <Button type="button" variant="ghost" size="lg" className="w-full sm:w-auto" onClick={cancelCamera} disabled={captureState === "recording"}>Cancelar</Button>
-              </div>
-            </div>
-          ) : null}
-
-          {captureState === "preview" && hasMedia ? (
-            <div>
-              {images.length > 0 ? (
+        {phase === "sizes" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <div className="flex gap-4">
+                <img
+                  src={product.imageUrl}
+                  alt=""
+                  className="h-28 w-21 shrink-0 bg-muted object-cover"
+                />
                 <div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {images.map((image, index) => (
-                      <div key={image.url} className="relative aspect-[3/4] overflow-hidden bg-muted">
-                        <img src={image.url} alt={`Foto ${index + 1} para experimentação`} className="h-full w-full object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => removeImage(image.url)}
-                          aria-label={`Remover foto ${index + 1}`}
-                          className="absolute right-1.5 top-1.5 grid size-7 place-items-center bg-overlay text-overlay-foreground"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                    {images.length < MAX_IMAGES ? (
-                      <button
-                        type="button"
-                        onClick={() => imageInputRef.current?.click()}
-                        className="grid aspect-[3/4] place-items-center border border-dashed border-border text-muted-foreground transition-colors hover:bg-accent"
-                      >
-                        <span className="flex flex-col items-center gap-1 text-[11px] sm:text-xs"><Plus className="size-5" />Adicionar</span>
-                      </button>
-                    ) : null}
-                  </div>
-                  <p className="mt-2 text-center text-[11px] text-muted-foreground sm:text-xs">
-                    {images.length} de {MAX_IMAGES} fotos selecionadas
+                  <h3 className="text-xl font-medium">Escolha os tamanhos</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais
+                    justa ou mais folgada em você.
                   </p>
                 </div>
+              </div>
+              <div className="mt-7 space-y-6">
+                <SizeOptions
+                  label="Tamanho para experimentar"
+                  sizes={product.sizes}
+                  value={trySize}
+                  onChange={(size) => size && setTrySize(size)}
+                />
+                <SizeOptions
+                  label="Tamanho que você costuma usar"
+                  sizes={product.sizes}
+                  value={usualSize}
+                  onChange={setUsualSize}
+                  allowUnknown
+                />
+              </div>
+              <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
+                {fitLabel(sizeOffset)}
+              </p>
+              <p className="mt-3 text-xs text-muted-foreground">
+                O caimento é uma simulação aproximada: a IA não mede o seu corpo.
+              </p>
+            </div>
+            <div className="shrink-0 border-t border-border p-4">
+              <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>
+                Continuar
+              </Button>
+            </div>
+          </div>
+        ) : phase === "tutorial" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <div className="mx-auto aspect-[10/7] w-full max-w-xs bg-muted p-4 text-foreground">
+                {step.illustration}
+              </div>
+              <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">
+                Passo {tutorialStep + 1} de {steps.length}
+              </p>
+              <h3 className="mt-2 text-xl font-medium">{step.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.text}</p>
+              <div className="mt-6 flex gap-1.5" aria-hidden="true">
+                {steps.map((item, index) => (
+                  <span
+                    key={item.title}
+                    className={`h-1 flex-1 ${index <= tutorialStep ? "bg-foreground" : "bg-border"}`}
+                  />
+                ))}
+              </div>
+              {isLastStep ? (
+                <p className="mt-6 flex gap-2 text-xs text-muted-foreground">
+                  <Camera className="size-4 shrink-0" />A câmera abre só para você se posicionar.
+                  Nada é transmitido até você tocar em Começar.
+                </p>
               ) : null}
+            </div>
+            <div className="flex shrink-0 gap-2 border-t border-border p-4">
+              {tutorialStep > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-12 rounded-none px-5"
+                  onClick={() => setTutorialStep(tutorialStep - 1)}
+                >
+                  Voltar
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-12 rounded-none px-5"
+                  onClick={() => void openCamera()}
+                >
+                  Pular
+                </Button>
+              )}
+              <Button
+                type="button"
+                className="h-12 flex-1 rounded-none"
+                onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}
+              >
+                {isLastStep ? (
+                  <>
+                    <Camera />
+                    Abrir câmera
+                  </>
+                ) : (
+                  "Próximo"
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
+              <div className="relative aspect-[9/16] h-full max-w-full overflow-hidden">
+                {phase === "result" ? (
+                  result ? (
+                    <video
+                      src={result.url}
+                      controls
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      className="absolute inset-0 size-full object-contain"
+                    />
+                  ) : (
+                    <StageMessage>
+                      {resultPending ? (
+                        <LoaderCircle className="mx-auto size-8 animate-spin" />
+                      ) : (
+                        <Sparkles className="mx-auto size-8" />
+                      )}
+                      <p className="mt-3 font-medium">
+                        {resultPending ? "Preparando seu vídeo…" : "Sessão encerrada"}
+                      </p>
+                    </StageMessage>
+                  )
+                ) : null}
 
-              {video ? (
-                <div>
-                  <div className="mx-auto aspect-[4/5] max-h-[52dvh] overflow-hidden bg-muted sm:max-h-[58dvh]">
-                    <video src={video.url} controls playsInline className="h-full w-full object-contain" />
+                {showLocalVideo ? (
+                  <video
+                    ref={localVideoRef}
+                    muted
+                    playsInline
+                    autoPlay
+                    className="absolute inset-0 size-full scale-x-[-1] object-cover"
+                  />
+                ) : null}
+                {remoteStream ? (
+                  <video
+                    ref={remoteVideoRef}
+                    muted
+                    playsInline
+                    autoPlay
+                    onPlaying={goLive}
+                    className={`absolute inset-0 size-full scale-x-[-1] object-cover transition-opacity duration-500 ${phase === "live" ? "opacity-100" : "opacity-0"}`}
+                  />
+                ) : null}
+
+                {(phase === "camera" || phase === "countdown") && cameraStatus === "ready" ? (
+                  <>
+                    <BodyGuide
+                      framing={framing}
+                      className="absolute inset-0 size-full text-white drop-shadow-[0_0_2px_rgba(0,0,0,0.8)]"
+                    />
+                    <div className="absolute inset-x-0 top-4 flex justify-center px-4">
+                      <span className="bg-black/60 px-3 py-2 text-center text-xs text-white">
+                        {guideText}
+                      </span>
+                    </div>
+                  </>
+                ) : null}
+
+                {phase === "camera" && cameraStatus === "requesting" ? (
+                  <StageMessage>
+                    <LoaderCircle className="mx-auto size-8 animate-spin" />
+                    <p className="mt-3 text-sm">Aguardando permissão da câmera…</p>
+                  </StageMessage>
+                ) : null}
+                {phase === "camera" &&
+                (cameraStatus === "denied" || cameraStatus === "unavailable") ? (
+                  <StageMessage>
+                    <Camera className="mx-auto size-9" />
+                    <p className="mt-4 font-medium">
+                      {cameraStatus === "denied"
+                        ? "Permissão da câmera bloqueada"
+                        : "Câmera indisponível"}
+                    </p>
+                    <p className="mt-2 text-sm opacity-80">
+                      {cameraStatus === "denied"
+                        ? "Libere o acesso à câmera nas configurações do navegador e tente de novo."
+                        : "Confira se o site está aberto em HTTPS e se nenhum outro app está usando a câmera."}
+                    </p>
+                  </StageMessage>
+                ) : null}
+
+                {phase === "countdown" ? (
+                  <div
+                    role="status"
+                    aria-live="assertive"
+                    className="absolute inset-0 grid place-items-center"
+                  >
+                    <div className="text-center text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.8)]">
+                      <span className="block text-8xl font-medium tabular-nums">{countdown}</span>
+                      <span className="mt-2 block text-sm">Afaste-se e encaixe-se na silhueta</span>
+                    </div>
                   </div>
-                  <p className="mt-3 truncate text-center text-[11px] text-muted-foreground sm:text-xs">{video.name}</p>
+                ) : null}
+
+                {phase === "connecting" ? (
+                  <StageMessage>
+                    <LoaderCircle className="mx-auto size-8 animate-spin" />
+                    <p className="mt-3 font-medium">Vestindo {product.name}…</p>
+                    <p className="mt-1 text-sm opacity-80">
+                      Fique parado na posição por alguns segundos.
+                    </p>
+                  </StageMessage>
+                ) : null}
+
+                {phase === "live" ? (
+                  <>
+                    <div className="absolute inset-x-0 top-4 flex justify-center">
+                      <span className="flex items-center gap-2 bg-background px-3 py-2 text-sm font-medium text-foreground">
+                        <span className="size-2 animate-pulse rounded-full bg-destructive" />
+                        Gravando · 0:{String(Math.max(secondsLeft, 0)).padStart(2, "0")}
+                      </span>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-white/30">
+                      <div
+                        className="h-full bg-destructive transition-[width] duration-1000 ease-linear"
+                        style={{
+                          width: `${((MAX_SESSION_SECONDS - secondsLeft) / MAX_SESSION_SECONDS) * 100}%`,
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : null}
+
+                {phase === "error" ? (
+                  <StageMessage>
+                    <Camera className="mx-auto size-9" />
+                    <p className="mt-4 font-medium">Algo deu errado</p>
+                    <p className="mt-2 text-sm opacity-80">{error}</p>
+                  </StageMessage>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="shrink-0 border-t border-border p-4">
+              {phase === "camera" && cameraStatus === "ready" ? (
+                <>
+                  {simulatesFit ? (
+                    <p className="mb-2 text-center text-xs">
+                      Tamanho {trySize}
+                      {usualSize ? ` · você usa ${usualSize}` : ""} ·{" "}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={showSizes}
+                      >
+                        Alterar
+                      </button>
+                    </p>
+                  ) : null}
+                  <p className="mb-3 text-center text-xs text-muted-foreground">
+                    Ao tocar em Começar, você tem {POSITIONING_SECONDS}s para se posicionar. Depois
+                    gravamos {MAX_SESSION_SECONDS}s com a roupa aplicada.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-12 rounded-none px-5"
+                      onClick={showTutorial}
+                    >
+                      Tutorial
+                    </Button>
+                    <Button
+                      type="button"
+                      className="h-12 flex-1 rounded-none"
+                      onClick={startCountdown}
+                    >
+                      <Sparkles />
+                      Começar
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              {phase === "camera" && cameraStatus === "requesting" ? (
+                <Button type="button" className="h-12 w-full rounded-none" disabled>
+                  Abrindo câmera…
+                </Button>
+              ) : null}
+              {(phase === "camera" &&
+                (cameraStatus === "denied" || cameraStatus === "unavailable")) ||
+              phase === "error" ? (
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-12 rounded-none px-5"
+                    onClick={showTutorial}
+                  >
+                    Tutorial
+                  </Button>
+                  <Button
+                    type="button"
+                    className="h-12 flex-1 rounded-none"
+                    onClick={() => void openCamera()}
+                  >
+                    <RefreshCcw />
+                    Tentar novamente
+                  </Button>
                 </div>
               ) : null}
-
-              <div className="mt-4 flex flex-col-reverse gap-2 sm:mt-5 sm:flex-row sm:justify-center">
-                <Button type="button" variant="outline" size="lg" className="w-full sm:w-auto" onClick={tryAgain}><RefreshCcw />Recomeçar</Button>
-                <Button type="button" size="lg" className="w-full sm:w-auto" onClick={() => setCaptureState("ready")}><Check />Usar {images.length > 0 ? "estas fotos" : "este vídeo"}</Button>
-              </div>
+              {phase === "countdown" || phase === "connecting" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-12 w-full rounded-none"
+                  onClick={backToCamera}
+                >
+                  Cancelar
+                </Button>
+              ) : null}
+              {phase === "live" ? (
+                <Button type="button" className="h-12 w-full rounded-none" onClick={finish}>
+                  <CircleStop />
+                  Encerrar
+                </Button>
+              ) : null}
+              {phase === "result" ? (
+                <>
+                  {error ? (
+                    <p role="alert" className="mb-3 text-center text-xs text-destructive">
+                      {error}
+                    </p>
+                  ) : null}
+                  <div className="flex flex-col gap-2">
+                    {result ? (
+                      <Button asChild className="h-12 rounded-none">
+                        <a href={result.url} download={`provador-reserva.${result.extension}`}>
+                          <Download />
+                          Baixar vídeo
+                        </a>
+                      </Button>
+                    ) : null}
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-12 flex-1 rounded-none"
+                        onClick={tryAgain}
+                      >
+                        <RefreshCcw />
+                        Experimentar de novo
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-12 rounded-none px-5"
+                        onClick={() => onOpenChange(false)}
+                      >
+                        Concluir
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
-          ) : null}
-
-          {captureState === "ready" ? (
-            <div className="py-6 text-center sm:py-10">
-              <span className="mx-auto grid size-12 place-items-center rounded-full bg-primary text-primary-foreground sm:size-14"><Check className="size-6 sm:size-7" /></span>
-              <h3 className="mt-4 text-lg font-medium sm:mt-5 sm:text-xl">Tudo pronto para experimentar</h3>
-              <p className="mx-auto mt-2 max-w-md text-[13px] text-muted-foreground sm:text-sm">
-                Sua mídia foi preparada. A aplicação da roupa por inteligência artificial será conectada na próxima etapa.
-              </p>
-              <div className="mt-6 flex flex-col gap-2 sm:mt-7 sm:flex-row sm:justify-center">
-                {video ? (
-                  <Button type="button" variant="outline" size="lg" className="w-full sm:w-auto" disabled={sharing} onClick={() => void shareOrDownload(video)}>
-                    {sharing ? <LoaderCircle className="animate-spin" /> : <Share2 />}
-                    Compartilhar ou salvar vídeo
-                  </Button>
-                ) : null}
-                <Button type="button" variant="outline" size="lg" className="w-full sm:w-auto" onClick={tryAgain}><RefreshCcw />Escolher outra</Button>
-                <Button type="button" size="lg" className="w-full sm:w-auto" onClick={() => onOpenChange(false)}>Concluir</Button>
-              </div>
-            </div>
-          ) : null}
-
-          {error ? <p role="alert" className="mt-4 border border-destructive p-3 text-[13px] text-destructive sm:text-sm">{error}</p> : null}
-        </div>
-
-        <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={addImages} />
-        <input ref={videoInputRef} type="file" accept="video/*" className="sr-only" onChange={useVideoFile} />
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
