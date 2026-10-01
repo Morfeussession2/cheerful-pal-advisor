@@ -9,6 +9,9 @@ import {
 } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 
+import { ProductShowcase, type StoreProduct } from "@/components/product-showcase";
+import { VirtualTryOn } from "@/components/virtual-try-on";
+
 const STORE_URL = "https://www.usereserva.com";
 const ASSET_ROOT =
   "https://lojausereserva.vtexassets.com/assets/vtex.file-manager-graphql/images";
@@ -160,5 +163,19 @@ function SidePanel({ type, onClose }: { type: "search" | "bag" | null; onClose: 
 
 export function EditorialStorefront() {
   const [panel, setPanel] = useState<"search" | "bag" | null>(null);
-  return <main className="min-h-screen bg-background text-foreground"><StoreHeader onSearch={() => setPanel("search")} onBag={() => setPanel("bag")} /><HeroSlider /><Highlights /><SidePanel type={panel} onClose={() => setPanel(null)} /></main>;
+  const [tryOnProduct, setTryOnProduct] = useState<StoreProduct | null>(null);
+  return (
+    <main className="min-h-screen bg-background text-foreground">
+      <StoreHeader onSearch={() => setPanel("search")} onBag={() => setPanel("bag")} />
+      <HeroSlider />
+      <Highlights />
+      <ProductShowcase onTryOn={setTryOnProduct} />
+      <SidePanel type={panel} onClose={() => setPanel(null)} />
+      <VirtualTryOn
+        open={tryOnProduct !== null}
+        productName={tryOnProduct?.name ?? ""}
+        onOpenChange={(open) => { if (!open) setTryOnProduct(null); }}
+      />
+    </main>
+  );
 }
