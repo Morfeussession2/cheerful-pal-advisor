@@ -48,6 +48,46 @@ export interface LucyTryOnSession {
   getStats: () => WebRTCStats | null;
 }
 
+function stringifyErrorDetail(value: unknown) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeRealtimeError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (typeof value !== "object" || value === null) return new Error(String(value));
+
+  const details = value as {
+    code?: unknown;
+    message?: unknown;
+    data?: unknown;
+    cause?: unknown;
+  };
+  const code = typeof details.code === "string" ? details.code : undefined;
+  const message = typeof details.message === "string" ? details.message : undefined;
+  const causeMessage =
+    details.cause instanceof Error
+      ? details.cause.message
+      : details.cause === undefined
+        ? undefined
+        : stringifyErrorDetail(details.cause);
+  const dataMessage = details.data === undefined ? undefined : stringifyErrorDetail(details.data);
+  const summary = [
+    code ? `[${code}]` : undefined,
+    message ?? stringifyErrorDetail(value),
+    causeMessage ? `cause: ${causeMessage}` : undefined,
+    dataMessage ? `data: ${dataMessage}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const normalized = new Error(summary);
+  Object.assign(normalized, { code, data: details.data, cause: details.cause });
+  return normalized;
+}
+
 async function fetchClientToken() {
   const response = await fetch(`${BACKEND_URL}/api/decart/realtime-token`, { method: "POST" });
   if (!response.ok) throw new Error(`Falha ao obter token realtime (HTTP ${response.status})`);
@@ -90,7 +130,7 @@ export function startLucyTryOn({
   const fail = (error: unknown) => {
     if (closed) return;
     close();
-    onError(error instanceof Error ? error : new Error(String(error)));
+    onError(normalizeRealtimeError(error));
   };
 
   const armConnectTimeout = () => {

@@ -6,18 +6,20 @@
 // Tamanho/caimento não entra no prompt: o modelo ajusta a peça ao corpo da pessoa
 // e ignora instruções como "two sizes too big" (testado no Lucy 2.1 e no VTON 3.5).
 
-export type GarmentKind = "top" | "bottom" | "shoes";
+export type GarmentKind = "top" | "bottom" | "shoes" | "dress";
 
 const REGION: Record<GarmentKind, string> = {
   top: "the upper body garment",
   bottom: "the lower body garment",
   shoes: "the footwear",
+  dress: "the person's current dress",
 };
 
 const FALLBACK_DESCRIPTION: Record<GarmentKind, string> = {
   top: "the top from the reference image",
   bottom: "the bottoms from the reference image",
   shoes: "the shoes from the reference image",
+  dress: "the dress from the reference image",
 };
 
 export interface TryOnPromptInput {

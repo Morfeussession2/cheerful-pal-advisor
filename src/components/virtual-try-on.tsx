@@ -51,6 +51,10 @@ export interface TryOnProduct {
   garment: GarmentKind;
   /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
   description?: string | undefined;
+  /** Grade de tamanhos, do menor para o maior. */
+  sizes: readonly string[];
+  /** Tamanho inicialmente escolhido no catálogo. */
+  size: string;
   /** Tabela de medidas do corpo por tamanho; sem ela não há recomendação de tamanho. */
   sizeChart?: readonly SizeChartRow[] | undefined;
 }
@@ -64,7 +68,7 @@ interface VirtualTryOnProps {
 }
 
 type Phase =
-  "profile" | "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
+  "sizes" | "profile" | "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
 type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 
 // Tempo para a pessoa se afastar do celular depois de tocar em "Começar".
@@ -79,6 +83,78 @@ const RECORDING_BITRATE = 8_000_000;
 const SLOT_POLL_MS = 2_000;
 const SLOT_WAIT_MAX_MS = 120_000;
 const PROFILE_KEY = "reserva:perfil-corpo";
+const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
+
+function readUsualSize() {
+  try {
+    return window.localStorage.getItem(USUAL_SIZE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveUsualSize(size: string | null) {
+  try {
+    if (size) window.localStorage.setItem(USUAL_SIZE_KEY, size);
+    else window.localStorage.removeItem(USUAL_SIZE_KEY);
+  } catch {
+    // Sem storage disponível: segue sem lembrar.
+  }
+}
+
+function fitLabel(sizeOffset: number | undefined) {
+  if (sizeOffset === undefined) return "Sem o seu tamanho, mostramos o caimento padrão da peça.";
+  if (sizeOffset <= -2) return "Bem justa: dois ou mais tamanhos abaixo do seu.";
+  if (sizeOffset === -1) return "Mais justa: um tamanho abaixo do seu.";
+  if (sizeOffset === 0) return "No seu tamanho: caimento natural da peça.";
+  if (sizeOffset === 1) return "Mais folgada: um tamanho acima do seu.";
+  return "Bem larga: dois ou mais tamanhos acima do seu.";
+}
+
+function SizeOptions({
+  label,
+  sizes,
+  value,
+  onChange,
+  allowUnknown = false,
+}: {
+  label: string;
+  sizes: readonly string[];
+  value: string | null;
+  onChange: (size: string | null) => void;
+  allowUnknown?: boolean;
+}) {
+  const chip = (selected: boolean) =>
+    `h-11 min-w-11 rounded-full border px-3 text-xs ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background"}`;
+  return (
+    <fieldset>
+      <legend className="text-sm font-medium">{label}</legend>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {sizes.map((size) => (
+          <button
+            key={size}
+            type="button"
+            aria-pressed={value === size}
+            onClick={() => onChange(size)}
+            className={chip(value === size)}
+          >
+            {size}
+          </button>
+        ))}
+        {allowUnknown ? (
+          <button
+            type="button"
+            aria-pressed={value === null}
+            onClick={() => onChange(null)}
+            className={chip(value === null)}
+          >
+            Não sei
+          </button>
+        ) : null}
+      </div>
+    </fieldset>
+  );
+}
 
 // Altura e peso ficam só neste aparelho, para não perguntar de novo.
 function readProfile(): BodyProfile | null {
@@ -184,22 +260,16 @@ function StageMessage({ children }: { children: ReactNode }) {
 export function VirtualTryOn({ open, product, watermark, onOpenChange }: VirtualTryOnProps) {
   const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
   const steps = tutorialSteps(framing);
-<<<<<<< HEAD
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
   const simulatesFit = product.garment !== "shoes";
   const firstPhase: Phase = "sizes";
-=======
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
 
-  const [phase, setPhase] = useState<Phase>("tutorial");
+  const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
-<<<<<<< HEAD
   const [trySize, setTrySize] = useState(product.size);
   const productImages = [...new Set([product.imageUrl, ...(product.imageUrls ?? [])])];
-=======
-  const productImages = [...new Set([product.imageUrl, ...(product.imageUrls ?? [])])].slice(0, 3);
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
   const [selectedImages, setSelectedImages] = useState<string[]>([product.imageUrl]);
+  const [usualSize, setUsualSize] = useState<string | null>(null);
   // Recomendação de tamanho: precisa da tabela de medidas (calçados não têm).
   const sizeChart = product.garment === "shoes" ? undefined : product.sizeChart;
   const canRecommend = Boolean(sizeChart);
@@ -222,15 +292,11 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const sessionRef = useRef<LucyTryOnSession | null>(null);
-<<<<<<< HEAD
   const sessionStartingRef = useRef(false);
   const countdownActiveRef = useRef(false);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-=======
   // Cada conexão ganha um número; cancelar incrementa e invalida a espera por vaga em curso.
   const attemptRef = useRef(0);
   const recordingRef = useRef<VideoRecording | null>(null);
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const warmupRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const samplerRef = useRef<BodySampler | null>(null);
@@ -238,12 +304,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const stopTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
-<<<<<<< HEAD
     countdownActiveRef.current = false;
-=======
-    if (warmupRef.current) clearTimeout(warmupRef.current);
-    warmupRef.current = null;
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
   };
 
   const closeSession = () => {
@@ -276,18 +337,13 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     attemptRef.current += 1;
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
-<<<<<<< HEAD
     countdownActiveRef.current = false;
-    discardRecorder(recorderRef.current);
-    recorderRef.current = null;
-=======
     if (warmupRef.current) clearTimeout(warmupRef.current);
     warmupRef.current = null;
     recordingRef.current?.discard();
     recordingRef.current = null;
     samplerRef.current?.stop();
     samplerRef.current = null;
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
     sessionRef.current?.close();
     sessionRef.current = null;
     sessionStartingRef.current = false;
@@ -299,12 +355,14 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     openRef.current = open;
     if (open) {
       setSelectedImages([product.imageUrl]);
+      setTrySize(product.size);
+      const savedUsualSize = readUsualSize();
+      setUsualSize(product.sizes.includes(savedUsualSize ?? "") ? savedUsualSize : null);
       const stored = readProfile();
       setProfile(stored);
       setHeightInput(stored ? String(stored.heightCm) : "");
       setWeightInput(stored ? String(stored.weightKg) : "");
-      // Na primeira vez, pergunta altura e peso antes do tutorial.
-      if (canRecommend && !stored) setPhase("profile");
+      setPhase(firstPhase);
       return;
     }
     teardown();
@@ -313,7 +371,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       return null;
     });
     setResultPending(false);
-    setPhase("tutorial");
+    setPhase(firstPhase);
     setTutorialStep(0);
     setCameraStatus("idle");
     setRemoteStream(null);
@@ -414,6 +472,12 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     setPhase("tutorial");
   };
 
+  const confirmSizes = () => {
+    saveUsualSize(usualSize);
+    setTutorialStep(0);
+    setPhase(canRecommend && !profile ? "profile" : "tutorial");
+  };
+
   const stopSampling = () => {
     const measurements = samplerRef.current?.stop() ?? null;
     samplerRef.current = null;
@@ -438,13 +502,6 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     }, 1000);
   };
 
-<<<<<<< HEAD
-  // Só aqui a câmera passa a ser transmitida e a sessão da fal.ai começa a contar.
-  const connect = () => {
-    if (sessionStartingRef.current || sessionRef.current) return;
-=======
-  // Fila do nosso lado: com a conta no limite de sessões simultâneas, espera uma vaga
-  // antes de conectar (esperar não custa nada). Sem limite configurado, segue direto.
   const waitForSlot = async (attempt: number) => {
     const deadline = Date.now() + SLOT_WAIT_MAX_MS;
     while (attemptRef.current === attempt) {
@@ -457,20 +514,16 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     return false;
   };
 
-  // Só aqui a câmera passa a ser transmitida e a sessão da Decart começa a contar.
   const connect = async () => {
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
+    if (sessionStartingRef.current || sessionRef.current) return;
     const stream = localStreamRef.current;
     if (!stream) {
       void openCamera();
       return;
     }
-<<<<<<< HEAD
     sessionStartingRef.current = true;
-=======
     const attempt = ++attemptRef.current;
     setQueueText("");
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
     setPhase("connecting");
     // Mede os ombros na câmera crua enquanto a pessoa fica parada na posição.
     stopSampling();
@@ -482,6 +535,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     if (attemptRef.current !== attempt) return;
     if (!hasSlot) {
       stopSampling();
+      sessionStartingRef.current = false;
       setError("O provador está cheio agora. Tente de novo em alguns instantes.");
       setPhase("error");
       return;
@@ -491,44 +545,36 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       garment: product.garment,
       description: product.description,
     });
+    const referenceImageUrl = new URL(
+      selectedImages[0] ?? product.imageUrl,
+      window.location.origin,
+    ).href;
     if (import.meta.env.DEV) console.info("Lucy VTON prompt:", prompt);
     sessionRef.current = startLucyTryOn({
       localStream: stream,
       prompt,
       // O modelo usa uma foto de referência por sessão: vale a primeira selecionada.
-      referenceImageUrl: selectedImages[0] ?? product.imageUrl,
+      referenceImageUrl,
       onRemoteStream: setRemoteStream,
       onQueuePosition: ({ position }) =>
         setQueueText(`Provador cheio: você é o ${position}º da fila.`),
       onError: (sessionError) => {
         console.error("Lucy VTON:", sessionError);
         sessionRef.current = null;
-<<<<<<< HEAD
         sessionStartingRef.current = false;
-        if (recorderRef.current) {
-=======
         if (recordingRef.current) {
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
           finish();
           setError("A conexão caiu no meio da sessão. Salvamos o que foi gravado até ali.");
           return;
         }
         stopTimer();
-<<<<<<< HEAD
         releaseCamera();
+        stopSampling();
         setRemoteStream(null);
-        const hitConcurrentLimit = /concurrent session limit reached/i.test(sessionError.message);
+        const hitConcurrentLimit = /concurrent session limit reached|\b1013\b/i.test(sessionError.message);
         setError(
           hitConcurrentLimit
             ? "A Decart já está usando todas as sessões simultâneas disponíveis. Feche o provador em outra aba ou dispositivo e aguarde alguns instantes antes de tentar novamente."
-=======
-        stopSampling();
-        setRemoteStream(null);
-        // A conta da Decart pode ter limite de sessões simultâneas (fechamento 1013).
-        setError(
-          /Concurrent session limit|\b1013\b/.test(sessionError.message)
-            ? "O provador está sendo usado por outra pessoa agora. Tente de novo em alguns segundos."
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
             : "Não conseguimos conectar ao provador. Verifique sua internet e tente novamente.",
         );
         setPhase("error");
@@ -643,6 +689,10 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     });
   };
 
+  const tryIndex = product.sizes.indexOf(trySize);
+  const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
+  const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
+
   const step = steps[tutorialStep] ?? steps[0]!;
   const isLastStep = tutorialStep === steps.length - 1;
   const showLocalVideo = cameraStatus === "ready" && phase !== "result";
@@ -661,230 +711,82 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        {phase === "profile" ? (
+        {phase === "sizes" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
-<<<<<<< HEAD
               <div className="flex min-w-0 gap-3 sm:gap-4">
-                <img
-                  src={product.imageUrl}
-                  alt=""
-                  className="h-24 w-[4.5rem] shrink-0 bg-muted object-cover sm:h-28 sm:w-[5.25rem]"
-                />
+                <img src={product.imageUrl} alt="" className="h-24 w-[4.5rem] shrink-0 bg-muted object-cover sm:h-28 sm:w-[5.25rem]" />
                 <div>
-                  <h3 className="text-lg font-medium sm:text-xl">
-                    {simulatesFit ? "Escolha tamanho e fotos" : "Escolha numeração e fotos"}
-                  </h3>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground sm:text-sm sm:leading-6">
-                    {simulatesFit
-                      ? "Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais justa ou mais folgada em você."
-                      : "Escolha o número do calçado e as fotos que deseja usar como referência."}
-                  </p>
+                  <h3 className="text-lg font-medium sm:text-xl">{simulatesFit ? "Escolha tamanho e fotos" : "Escolha numeração e fotos"}</h3>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground sm:text-sm sm:leading-6">{simulatesFit ? "Escolha o tamanho que deseja simular e, se quiser, compare com o que costuma usar." : "Escolha o número do calçado e as fotos que deseja usar como referência."}</p>
                 </div>
-=======
-              <h3 className="text-lg font-medium sm:text-xl">Quer uma recomendação de tamanho?</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Informe sua altura e seu peso. Durante a prova, a câmera também mede a largura dos
-                seus ombros para refinar a sugestão.
-              </p>
-              <div className="mt-6 grid grid-cols-2 gap-3">
-                <label className="text-sm font-medium">
-                  Altura (cm)
-                  <Input
-                    className="mt-2 h-12 rounded-none"
-                    inputMode="decimal"
-                    placeholder="175"
-                    value={heightInput}
-                    onChange={(event) => setHeightInput(event.target.value)}
-                  />
-                </label>
-                <label className="text-sm font-medium">
-                  Peso (kg)
-                  <Input
-                    className="mt-2 h-12 rounded-none"
-                    inputMode="decimal"
-                    placeholder="72"
-                    value={weightInput}
-                    onChange={(event) => setWeightInput(event.target.value)}
-                  />
-                </label>
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
               </div>
-              <p className="mt-6 flex gap-2 text-xs leading-5 text-muted-foreground">
-                <Ruler className="size-4 shrink-0" />A medição acontece no seu aparelho: a imagem
-                não é enviada para isso. O resultado é uma estimativa, não uma medida exata.
-              </p>
-            </div>
-            <div className="flex shrink-0 gap-2 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-12 rounded-none px-5"
-                onClick={() => setPhase("tutorial")}
-              >
-                Agora não
-              </Button>
-              <Button
-                type="button"
-                className="h-12 flex-1 rounded-none"
-                disabled={!isValidProfile(draftProfile)}
-                onClick={confirmProfile}
-              >
-                Continuar
-              </Button>
-            </div>
-          </div>
-        ) : phase === "tutorial" ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
               {productImages.length > 1 ? (
-<<<<<<< HEAD
                 <fieldset className="mt-6">
-                  <legend className="text-sm font-medium">Fotos do produto</legend>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    Selecione até 3 fotos. O Lucy 2.1 usa a primeira selecionada como referência da simulação.
-=======
-                <fieldset className="mb-6">
                   <legend className="text-sm font-medium">Fotos do produto (até 3)</legend>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    O provador usa uma foto por simulação. A primeira selecionada será a referência.
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
-                  </p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">A primeira foto selecionada será usada como referência da simulação.</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {productImages.map((imageUrl, index) => {
                       const selected = selectedImages.includes(imageUrl);
                       return (
-                        <button
-                          key={imageUrl}
-                          type="button"
-                          aria-pressed={selected}
-                          aria-label={`Foto ${index + 1}${selected ? ", selecionada" : ""}`}
-                          onClick={() => toggleProductImage(imageUrl)}
-                          className={`relative size-16 overflow-hidden border-2 ${selected ? "border-foreground" : "border-transparent"}`}
-                        >
-                          <img
-                            src={imageUrl}
-                            alt={`Foto ${index + 1} de ${product.name}`}
-                            className="size-full object-cover"
-                          />
-                          {selected ? (
-                            <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-foreground text-[10px] text-background">
-                              ✓
-                            </span>
-                          ) : null}
+                        <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleProductImage(imageUrl)} className={`relative size-16 overflow-hidden border-2 ${selected ? "border-foreground" : "border-transparent"}`}>
+                          <img src={imageUrl} alt={`Foto ${index + 1} de ${product.name}`} className="size-full object-cover" />
+                          {selected ? <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-foreground text-[10px] text-background">✓</span> : null}
                         </button>
                       );
                     })}
                   </div>
                 </fieldset>
               ) : null}
-<<<<<<< HEAD
               {simulatesFit ? (
                 <>
                   <div className="mt-7 space-y-6">
-                    <SizeOptions
-                      label="Tamanho para experimentar"
-                      sizes={product.sizes}
-                      value={trySize}
-                      onChange={(size) => size && setTrySize(size)}
-                    />
-                    <SizeOptions
-                      label="Tamanho que você costuma usar"
-                      sizes={product.sizes}
-                      value={usualSize}
-                      onChange={setUsualSize}
-                      allowUnknown
-                    />
+                    <SizeOptions label="Tamanho para experimentar" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
+                    <SizeOptions label="Tamanho que você costuma usar" sizes={product.sizes} value={usualSize} onChange={setUsualSize} allowUnknown />
                   </div>
-                  <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
-                    {fitLabel(sizeOffset)}
-                  </p>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    O caimento é uma simulação aproximada: a IA não mede o seu corpo.
-                  </p>
+                  <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">{fitLabel(sizeOffset)}</p>
+                  <p className="mt-3 text-xs text-muted-foreground">O caimento é uma simulação aproximada.</p>
                 </>
               ) : (
                 <div className="mt-7 space-y-5">
-                  <SizeOptions
-                    label="Numeração do calçado"
-                    sizes={product.sizes}
-                    value={trySize}
-                    onChange={(size) => size && setTrySize(size)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Você pode selecionar até três fotos do produto.
-                  </p>
+                  <SizeOptions label="Numeração do calçado" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
+                  <p className="text-xs text-muted-foreground">Você pode selecionar até três fotos do produto.</p>
                 </div>
               )}
             </div>
             <div className="shrink-0 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>
-                Continuar
-              </Button>
+              <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>Continuar</Button>
+            </div>
+          </div>
+        ) : phase === "profile" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
+              <h3 className="text-lg font-medium sm:text-xl">Quer uma recomendação de tamanho?</h3>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">Informe sua altura e seu peso. Durante a prova, a câmera também mede a largura dos ombros para refinar a sugestão.</p>
+              <div className="mt-6 grid grid-cols-2 gap-3">
+                <label className="text-sm font-medium">Altura (cm)<Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="175" value={heightInput} onChange={(event) => setHeightInput(event.target.value)} /></label>
+                <label className="text-sm font-medium">Peso (kg)<Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="72" value={weightInput} onChange={(event) => setWeightInput(event.target.value)} /></label>
+              </div>
+              <p className="mt-6 flex gap-2 text-xs leading-5 text-muted-foreground"><Ruler className="size-4 shrink-0" />A medição acontece no seu aparelho: a imagem não é enviada para isso. O resultado é uma estimativa, não uma medida exata.</p>
+            </div>
+            <div className="flex shrink-0 gap-2 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <Button type="button" variant="ghost" className="h-12 rounded-none px-5" onClick={() => setPhase("tutorial")}>Agora não</Button>
+              <Button type="button" className="h-12 flex-1 rounded-none" disabled={!isValidProfile(draftProfile)} onClick={confirmProfile}>Continuar</Button>
             </div>
           </div>
         ) : phase === "tutorial" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-=======
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
-              <div className="mx-auto aspect-[10/7] w-full max-w-xs bg-muted p-4 text-foreground">
-                {step.illustration}
-              </div>
-              <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                Passo {tutorialStep + 1} de {steps.length}
-              </p>
+              <div className="mx-auto aspect-[10/7] w-full max-w-xs bg-muted p-4 text-foreground">{step.illustration}</div>
+              <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">Passo {tutorialStep + 1} de {steps.length}</p>
               <h3 className="mt-2 text-xl font-medium">{step.title}</h3>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.text}</p>
-              <div className="mt-6 flex gap-1.5" aria-hidden="true">
-                {steps.map((item, index) => (
-                  <span
-                    key={item.title}
-                    className={`h-1 flex-1 ${index <= tutorialStep ? "bg-foreground" : "bg-border"}`}
-                  />
-                ))}
-              </div>
-              {isLastStep ? (
-                <p className="mt-6 flex gap-2 text-xs text-muted-foreground">
-                  <Camera className="size-4 shrink-0" />A câmera abre só para você se posicionar.
-                  Nada é transmitido até você tocar em Começar.
-                </p>
-              ) : null}
+              <div className="mt-6 flex gap-1.5" aria-hidden="true">{steps.map((item, index) => <span key={item.title} className={`h-1 flex-1 ${index <= tutorialStep ? "bg-foreground" : "bg-border"}`} />)}</div>
+              {isLastStep ? <p className="mt-6 flex gap-2 text-xs text-muted-foreground"><Camera className="size-4 shrink-0" />A câmera abre só para você se posicionar. Nada é transmitido até você tocar em Começar.</p> : null}
             </div>
             <div className="flex shrink-0 gap-2 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              {tutorialStep > 0 ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-12 rounded-none px-5"
-                  onClick={() => setTutorialStep(tutorialStep - 1)}
-                >
-                  Voltar
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="h-12 rounded-none px-5"
-                  onClick={() => void openCamera()}
-                >
-                  Pular
-                </Button>
-              )}
-              <Button
-                type="button"
-                className="h-12 flex-1 rounded-none"
-                onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}
-              >
-                {isLastStep ? (
-                  <>
-                    <Camera />
-                    Abrir câmera
-                  </>
-                ) : (
-                  "Próximo"
-                )}
-              </Button>
+              {tutorialStep > 0 ? <Button type="button" variant="outline" className="h-12 rounded-none px-5" onClick={() => setTutorialStep(tutorialStep - 1)}>Voltar</Button> : <Button type="button" variant="ghost" className="h-12 rounded-none px-5" onClick={() => setPhase("sizes")}>Voltar</Button>}
+              <Button type="button" className="h-12 flex-1 rounded-none" onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}>{isLastStep ? <><Camera />Abrir câmera</> : "Próximo"}</Button>
             </div>
           </div>
         ) : (

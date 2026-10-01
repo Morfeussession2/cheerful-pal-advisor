@@ -7,10 +7,13 @@ import type { Watermark } from "@/lib/video-recording";
 import { Button } from "@/components/ui/button";
 
 const STORE_URL = "https://www.usereserva.com";
+const ASSET_ROOT = "https://lojausereserva.vtexassets.com/assets/vtex.file-manager-graphql/images";
 const sizes = ["P", "M", "G", "GG", "GGG"];
 const shoeSizes = ["33/34", "35/36", "37/38", "39/40", "41/42", "43/44", "45/46"];
+const dressSizes = ["P", "M", "G", "GG"];
 
 const products = [
+  { id: "vestido-teste", name: "Vestido teste", image: "products/vestido-teste.jpeg", price: "Preço a definir", group: "feminino", garment: "dress" },
   { id: "jaqueta-marambaia-blend", name: "Jaqueta Marambaia Blend", image: "3d1f2bae-1143-46aa-80fe-3712f39bf2e2___e1ec7902ac974b9d7b7c90090420dafd.jpg", price: "R$ 1.599,00", group: "all-black", garment: "top" },
   { id: "camiseta-reserva-all-black", name: "Camiseta Reserva All Black", image: "1a1c04e4-2df0-4527-8e89-a321813c4366___a7647190e84ac2f854cf7d6d1070a5f4.jpg", price: "R$ 299,00", group: "all-black", garment: "top" },
   { id: "tenis-r-osaka", name: "Tênis R Osaka", image: "127b4b55-350e-4866-b4a7-b9b57f4b34be___c6f850d7a37efe20e29b51fe78e1833b.jpg", price: "R$ 599,00", group: "calcados", garment: "shoes" },
@@ -31,7 +34,6 @@ const products = [
 
 type Product = (typeof products)[number];
 
-<<<<<<< HEAD
 // URLs obtidas do catálogo público da Reserva. Cada conjunto contém quatro fotos reais do mesmo item.
 const PRODUCT_GALLERIES: Record<Product["id"], readonly string[]> = {
   "jaqueta-marambaia-blend": [
@@ -130,6 +132,7 @@ const PRODUCT_GALLERIES: Record<Product["id"], readonly string[]> = {
     "https://lojausereserva.vteximg.com.br/arquivos/ids/12803356/0102055781_03.jpg?v=639149062491970000",
     "https://lojausereserva.vteximg.com.br/arquivos/ids/12803350/0102055781_04.jpg?v=639149062491500000",
   ],
+  "vestido-teste": ["/products/vestido-teste.jpeg"],
 };
 
 function productGallery(product: Product) {
@@ -137,10 +140,11 @@ function productGallery(product: Product) {
 }
 
 function productSizes(product: Product) {
-  return product.garment === "shoes" ? shoeSizes : sizes;
+  if (product.garment === "shoes") return shoeSizes;
+  if (product.garment === "dress") return dressSizes;
+  return sizes;
 }
 
-=======
 // Tabela de medidas do CORPO por tamanho, usada na recomendação de tamanho do provador.
 // ATENÇÃO: é uma tabela padrão de moda masculina brasileira, não a oficial da Reserva
 // (o site não publica a deles). Substituir pelos números oficiais antes de ir para produção.
@@ -158,11 +162,14 @@ const TRY_ON_WATERMARK: Watermark = {
   label: "Reserva",
 };
 
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
 // Dados do catálogo da Reserva para o provador: foto só da peça, em fundo neutro, e a
 // descrição (em inglês, para o prompt) com cor, tecido, modelagem e detalhes da ficha.
 // Os banners da vitrine têm texto e cenário, o que atrapalha o modelo de try-on.
 const TRY_ON_DETAILS: Partial<Record<Product["id"], { description: string }>> = {
+  "vestido-teste": {
+    description:
+      "a long black fitted dress made from biodegradable Amni Soul Eco polyamide swimwear fabric with UV 50+ protection, featuring a straight neckline, gathered ruching at the center front of the bust, and thin straps extending from the center of the bust and tying at the neck",
+  },
   "parka-scott": {
     description:
       "a mustard yellow waterproof parka jacket in lightweight matte polyester, regular fit, worn zipped closed, with an attached hood, a tall stand collar, a snap-button placket over the front zipper and four flap pockets on the chest and waist",
@@ -173,21 +180,23 @@ const TRY_ON_DETAILS: Partial<Record<Product["id"], { description: string }>> = 
   },
 };
 
-function toTryOnProduct(product: Product): TryOnProduct {
+const PRODUCT_DESCRIPTIONS: Partial<Record<Product["id"], string>> = {
+  "vestido-teste":
+    "Vestido de comprimento midi, decote reto e detalhe franzido na frente. Possui alças finas saindo do centro do busto para amarração no pescoço e comprimento logo abaixo do umbigo. Produzido em tecido de biquíni de poliamida biodegradável Amni Soul Eco® e com proteção UV 50+ contra raios ultravioleta.",
+};
+
+function toTryOnProduct(product: Product, size: string): TryOnProduct {
   const details = TRY_ON_DETAILS[product.id];
   const imageUrls = productGallery(product);
   return {
     name: product.name,
-    imageUrl: imageUrls[0],
+    imageUrl: imageUrls[0]!,
     imageUrls,
     description: details?.description,
     garment: product.garment,
-<<<<<<< HEAD
+    sizeChart: product.garment === "shoes" || product.garment === "dress" ? undefined : SIZE_CHART,
     sizes: productSizes(product),
     size,
-=======
-    sizeChart: SIZE_CHART,
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
   };
 }
 
@@ -201,13 +210,8 @@ function productGroup(slug: string) {
   return normalized === "mini" ? "infantil" : normalized;
 }
 
-<<<<<<< HEAD
 function SizeSlider({ productName, sizeOptions, onBuy, onTryOn }: { productName: string; sizeOptions: readonly string[]; onBuy: (selectedSize: string) => void; onTryOn: (selectedSize: string) => void }) {
   const [selectedSize, setSelectedSize] = useState(sizeOptions[0] ?? "P");
-=======
-function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBuy: (selectedSize: string) => void; onTryOn: () => void }) {
-  const [selectedSize, setSelectedSize] = useState("P");
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
   const [startIndex, setStartIndex] = useState(0);
   const visibleSizes = sizeOptions.slice(startIndex, startIndex + 4);
 
@@ -225,13 +229,13 @@ function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBu
         {startIndex === 0 ? <button type="button" aria-label="Próximos tamanhos" onClick={() => setStartIndex(1)} className="grid size-7 shrink-0 place-items-center"><ChevronRight className="size-3.5" /></button> : null}
       </div>
       <Button type="button" size="sm" className="h-9 min-w-0 w-full rounded-none px-2 text-[11px] sm:text-xs xl:w-auto" onClick={() => onBuy(selectedSize)}>Comprar</Button>
-      <Button type="button" size="sm" variant="outline" className="h-9 min-w-0 w-full rounded-none px-1.5 text-[11px] sm:px-2 sm:text-xs xl:w-auto" onClick={onTryOn}><Sparkles className="size-3.5" /><span className="sm:hidden">Provar</span><span className="hidden sm:inline">Experimentar</span></Button>
+      <Button type="button" size="sm" variant="outline" className="h-9 min-w-0 w-full rounded-none px-1.5 text-[11px] sm:px-2 sm:text-xs xl:w-auto" onClick={() => onTryOn(selectedSize)}><Sparkles className="size-3.5" /><span className="sm:hidden">Provar</span><span className="hidden sm:inline">Experimentar</span></Button>
     </div>
   );
 }
 
 export function CollectionPage({ slug }: { slug: string }) {
-  const [tryOnProduct, setTryOnProduct] = useState<Product | null>(null);
+  const [tryOn, setTryOn] = useState<{ product: Product; size: string } | null>(null);
   const [tryOnOpen, setTryOnOpen] = useState(false);
   const title = displayCollectionName(slug);
   const matches = products.filter((product) => product.group === productGroup(slug));
@@ -254,11 +258,7 @@ export function CollectionPage({ slug }: { slug: string }) {
                   <img src={productGallery(product)[0]} alt={product.name} loading="lazy" className="aspect-[3/4] w-full object-cover" />
                 </a>
                 <div className="absolute inset-x-0 bottom-0 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
-<<<<<<< HEAD
                   <SizeSlider productName={product.name} sizeOptions={productSizes(product)} onBuy={(size) => { window.location.href = `/produto/${product.id}?tamanho=${encodeURIComponent(size)}`; }} onTryOn={(size) => { setTryOn({ product, size }); setTryOnOpen(true); }} />
-=======
-                  <SizeSlider productName={product.name} onBuy={(size) => { window.location.href = `/produto/${product.id}?tamanho=${encodeURIComponent(size)}`; }} onTryOn={() => { setTryOnProduct(product); setTryOnOpen(true); }} />
->>>>>>> 8b24b312ccf60c82cdbb97d55ed6e4edd1b6953f
                 </div>
               </div>
               <a href={`/produto/${product.id}`} className="mt-3 block text-xs leading-5 md:text-sm">{product.name}</a>
@@ -267,7 +267,7 @@ export function CollectionPage({ slug }: { slug: string }) {
           ))}
         </div>
       </section>
-      {tryOnProduct ? <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(tryOnProduct)} watermark={TRY_ON_WATERMARK} onOpenChange={setTryOnOpen} /> : null}
+      {tryOn ? <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(tryOn.product, tryOn.size)} watermark={TRY_ON_WATERMARK} onOpenChange={setTryOnOpen} /> : null}
     </main>
   );
 }
@@ -315,7 +315,7 @@ export function ProductDetailPage({ productId, initialSize }: { productId: strin
           {addedToBag ? <p role="status" className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><Check className="size-4" />{product.name} · tamanho {selectedSize} adicionado à sacola.</p> : null}
           <section className="mt-8 border-t border-border pt-6" aria-labelledby="product-details-title">
             <h2 id="product-details-title" className="text-base font-medium">Detalhes do produto</h2>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">{product.name}, uma peça versátil da Reserva para compor diferentes combinações. Selecione o tamanho ideal e experimente virtualmente, ao vivo, pela câmera do seu celular.</p>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">{PRODUCT_DESCRIPTIONS[product.id] ?? `${product.name}, uma peça versátil da Reserva para compor diferentes combinações.`} Selecione o tamanho ideal e experimente virtualmente, ao vivo, pela câmera do seu celular.</p>
             <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
               <dt className="text-muted-foreground">Marca</dt><dd>Reserva</dd>
               <dt className="text-muted-foreground">Tamanho selecionado</dt><dd>{selectedSize}</dd>
@@ -324,7 +324,7 @@ export function ProductDetailPage({ productId, initialSize }: { productId: strin
           </section>
         </div>
       </section>
-      <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(product)} watermark={TRY_ON_WATERMARK} onOpenChange={setTryOnOpen} />
+      <VirtualTryOn open={tryOnOpen} product={toTryOnProduct(product, selectedSize)} watermark={TRY_ON_WATERMARK} onOpenChange={setTryOnOpen} />
     </main>
   );
 }
