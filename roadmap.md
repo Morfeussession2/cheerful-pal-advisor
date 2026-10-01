@@ -1,12 +1,15 @@
 # Roadmap
 
-## Em andamento
-- [ ] Estudar alterações do usuário no projeto e o backend enviado (src.zip — fal.ai realtime token)
-- [ ] Corrigir layout quebrado dos botões "Experimentar" e "Comprar" em telas pequenas (responsividade + tamanhos de texto)
-- [ ] iOS: trocar "baixar vídeo" por compartilhamento (Web Share API) para permitir salvar o vídeo no iPhone
-- [ ] Permitir escolher até 3 imagens por produto ao clicar em "Experimentar" (para geração do vídeo)
-- [ ] Adicionar mais imagens em cada produto da vitrine
+## Concluído
+- [x] Estudar backend enviado (src.zip — token realtime fal.ai para `decart/lucy2-vton/realtime`)
+- [x] Vitrine "Mais vendidos" com produtos reais, 4 fotos cada, preços e links
+- [x] Botões Comprar/Experimentar responsivos (empilham em telas pequenas, textos ajustados)
+- [x] Janela Experimentar: até 3 fotos (contador, remover, adicionar), vídeo ou gravação de 5s
+- [x] iOS: botão "Compartilhar ou salvar vídeo" via Web Share API com fallback de download
+- [x] Testado em 390px e 1280px, sem erros
 
-## Observações
-- Backend (Express) emite token temporário para `decart/lucy2-vton/realtime` da fal.ai; frontend usa `VITE_LUCY_BACKEND_URL`. Integração real fica para etapa futura.
-- O `.env.example` enviado contém uma chave de API real — avisar o usuário para revogá-la/rotacioná-la.
+## Próxima etapa (aguardando)
+- [ ] Integrar IA: backend emite token em POST /api/fal/realtime-token; frontend conecta via fal.realtime com VITE_LUCY_BACKEND_URL
+
+## Alerta
+- O `.env.example` do backend enviado contém uma FAL_KEY real exposta — usuário deve revogar/rotacionar a chave no painel da fal.ai.
