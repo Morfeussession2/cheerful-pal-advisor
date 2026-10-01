@@ -180,12 +180,12 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const steps = tutorialSteps(framing);
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
   const simulatesFit = product.garment !== "shoes";
-  const firstPhase: Phase = simulatesFit ? "sizes" : "tutorial";
+  const firstPhase: Phase = "sizes";
 
   const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
   const [trySize, setTrySize] = useState(product.size);
-  const productImages = [...new Set([product.imageUrl, ...(product.imageUrls ?? [])])].slice(0, 3);
+  const productImages = [...new Set([product.imageUrl, ...(product.imageUrls ?? [])])];
   const [selectedImages, setSelectedImages] = useState<string[]>([product.imageUrl]);
   const [usualSize, setUsualSize] = useState<string | null>(null);
   // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
@@ -203,17 +203,21 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const sessionRef = useRef<LucyTryOnSession | null>(null);
+  const sessionStartingRef = useRef(false);
+  const countdownActiveRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
+    countdownActiveRef.current = false;
   };
 
   const closeSession = () => {
     sessionRef.current?.close();
     sessionRef.current = null;
+    sessionStartingRef.current = false;
     setRemoteStream(null);
   };
 
@@ -239,10 +243,12 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const teardown = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
+    countdownActiveRef.current = false;
     discardRecorder(recorderRef.current);
     recorderRef.current = null;
     sessionRef.current?.close();
     sessionRef.current = null;
+    sessionStartingRef.current = false;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
   }, []);
@@ -353,6 +359,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   };
 
   const startCountdown = () => {
+    if (countdownActiveRef.current || phase !== "camera" || cameraStatus !== "ready") return;
+    countdownActiveRef.current = true;
     setError("");
     setCountdown(POSITIONING_SECONDS);
     setPhase("countdown");
@@ -370,11 +378,13 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
 
   // Só aqui a câmera passa a ser transmitida e a sessão da fal.ai começa a contar.
   const connect = () => {
+    if (sessionStartingRef.current || sessionRef.current) return;
     const stream = localStreamRef.current;
     if (!stream) {
       void openCamera();
       return;
     }
+    sessionStartingRef.current = true;
     setPhase("connecting");
     const prompt = buildTryOnPrompt({
       garment: product.garment,
@@ -393,14 +403,21 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
       onError: (sessionError) => {
         console.error("Lucy VTON:", sessionError);
         sessionRef.current = null;
+        sessionStartingRef.current = false;
         if (recorderRef.current) {
           finish();
           setError("A conexão caiu no meio da sessão. Salvamos o que foi gravado até ali.");
           return;
         }
         stopTimer();
+        releaseCamera();
         setRemoteStream(null);
-        setError("Não conseguimos conectar ao provador. Verifique sua internet e tente novamente.");
+        const hitConcurrentLimit = /concurrent session limit reached/i.test(sessionError.message);
+        setError(
+          hitConcurrentLimit
+            ? "A Decart já está usando todas as sessões simultâneas disponíveis. Feche o provador em outra aba ou dispositivo e aguarde alguns instantes antes de tentar novamente."
+            : "Não conseguimos conectar ao provador. Verifique sua internet e tente novamente.",
+        );
         setPhase("error");
       },
     });
@@ -540,18 +557,21 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   className="h-24 w-[4.5rem] shrink-0 bg-muted object-cover sm:h-28 sm:w-[5.25rem]"
                 />
                 <div>
-                  <h3 className="text-lg font-medium sm:text-xl">Escolha os tamanhos</h3>
+                  <h3 className="text-lg font-medium sm:text-xl">
+                    {simulatesFit ? "Escolha tamanho e fotos" : "Escolha numeração e fotos"}
+                  </h3>
                   <p className="mt-2 text-xs leading-5 text-muted-foreground sm:text-sm sm:leading-6">
-                    Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais
-                    justa ou mais folgada em você.
+                    {simulatesFit
+                      ? "Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais justa ou mais folgada em você."
+                      : "Escolha o número do calçado e as fotos que deseja usar como referência."}
                   </p>
                 </div>
               </div>
               {productImages.length > 1 ? (
                 <fieldset className="mt-6">
-                  <legend className="text-sm font-medium">Fotos do produto (até 3)</legend>
+                  <legend className="text-sm font-medium">Fotos do produto</legend>
                   <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    O Lucy 2.1 usa uma foto por simulação. A primeira selecionada será a referência.
+                    Selecione até 3 fotos. O Lucy 2.1 usa a primeira selecionada como referência da simulação.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {productImages.map((imageUrl, index) => {
@@ -573,27 +593,43 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   </div>
                 </fieldset>
               ) : null}
-              <div className="mt-7 space-y-6">
-                <SizeOptions
-                  label="Tamanho para experimentar"
-                  sizes={product.sizes}
-                  value={trySize}
-                  onChange={(size) => size && setTrySize(size)}
-                />
-                <SizeOptions
-                  label="Tamanho que você costuma usar"
-                  sizes={product.sizes}
-                  value={usualSize}
-                  onChange={setUsualSize}
-                  allowUnknown
-                />
-              </div>
-              <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
-                {fitLabel(sizeOffset)}
-              </p>
-              <p className="mt-3 text-xs text-muted-foreground">
-                O caimento é uma simulação aproximada: a IA não mede o seu corpo.
-              </p>
+              {simulatesFit ? (
+                <>
+                  <div className="mt-7 space-y-6">
+                    <SizeOptions
+                      label="Tamanho para experimentar"
+                      sizes={product.sizes}
+                      value={trySize}
+                      onChange={(size) => size && setTrySize(size)}
+                    />
+                    <SizeOptions
+                      label="Tamanho que você costuma usar"
+                      sizes={product.sizes}
+                      value={usualSize}
+                      onChange={setUsualSize}
+                      allowUnknown
+                    />
+                  </div>
+                  <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
+                    {fitLabel(sizeOffset)}
+                  </p>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    O caimento é uma simulação aproximada: a IA não mede o seu corpo.
+                  </p>
+                </>
+              ) : (
+                <div className="mt-7 space-y-5">
+                  <SizeOptions
+                    label="Numeração do calçado"
+                    sizes={product.sizes}
+                    value={trySize}
+                    onChange={(size) => size && setTrySize(size)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Você pode selecionar até três fotos do produto.
+                  </p>
+                </div>
+              )}
             </div>
             <div className="shrink-0 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>
