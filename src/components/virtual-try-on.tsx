@@ -23,6 +23,8 @@ export interface TryOnProduct {
   name: string;
   /** Foto da peça, usada como referência pelo modelo. */
   imageUrl: string;
+  /** Outras fotos reais da mesma peça, quando disponíveis no catálogo. */
+  imageUrls?: readonly string[];
   garment: GarmentKind;
   /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
   description?: string | undefined;
@@ -183,6 +185,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
   const [trySize, setTrySize] = useState(product.size);
+  const productImages = [...new Set([product.imageUrl, ...(product.imageUrls ?? [])])].slice(0, 3);
+  const [selectedImages, setSelectedImages] = useState<string[]>([product.imageUrl]);
   const [usualSize, setUsualSize] = useState<string | null>(null);
   // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
   const [skipTutorial, setSkipTutorial] = useState(false);
@@ -190,7 +194,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const [countdown, setCountdown] = useState(POSITIONING_SECONDS);
   const [secondsLeft, setSecondsLeft] = useState(MAX_SESSION_SECONDS);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [result, setResult] = useState<{ url: string; extension: string } | null>(null);
+  const [result, setResult] = useState<{ url: string; extension: string; blob: Blob } | null>(null);
   const [resultPending, setResultPending] = useState(false);
   const [error, setError] = useState("");
 
@@ -247,6 +251,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     openRef.current = open;
     if (open) {
       setTrySize(product.size);
+      setSelectedImages([product.imageUrl]);
       setUsualSize(readUsualSize());
       return;
     }
@@ -262,7 +267,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     setCameraStatus("idle");
     setRemoteStream(null);
     setError("");
-  }, [open, teardown, product.size, firstPhase]);
+  }, [open, teardown, product.size, product.imageUrl, firstPhase]);
 
   useEffect(() => teardown, [teardown]);
 
@@ -380,7 +385,9 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     sessionRef.current = startLucyTryOn({
       localStream: stream,
       prompt,
-      referenceImageUrl: product.imageUrl,
+      // Lucy 2.1 aceita uma reference_image_url. A primeira foto selecionada
+      // fica como referência principal; a seleção continua limitada a três.
+      referenceImageUrl: selectedImages[0] ?? product.imageUrl,
       firstFrame: captureFrame(localVideoRef.current),
       onRemoteStream: setRemoteStream,
       onError: (sessionError) => {
@@ -420,6 +427,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
       setResult({
         url: URL.createObjectURL(blob),
         extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm",
+        blob,
       });
     };
     recorder.start(1000);
@@ -465,6 +473,43 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     void openCamera();
   };
 
+  const saveVideo = async () => {
+    if (!result) return;
+    const filename = `provador-reserva.${result.extension}`;
+    const shareData = { files: [new File([result.blob], filename, { type: result.blob.type })] };
+
+    try {
+      if (navigator.share && navigator.canShare?.(shareData)) {
+        await navigator.share(shareData);
+        return;
+      }
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+    }
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    if (isIOS) {
+      window.open(result.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    const link = document.createElement("a");
+    link.href = result.url;
+    link.download = filename;
+    link.click();
+  };
+
+  const toggleProductImage = (imageUrl: string) => {
+    setSelectedImages((current) => {
+      if (current.includes(imageUrl)) {
+        const remaining = current.filter((item) => item !== imageUrl);
+        return remaining.length ? remaining : current;
+      }
+      return current.length < 3 ? [...current, imageUrl] : current;
+    });
+  };
+
   const tryIndex = product.sizes.indexOf(trySize);
   const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
   const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
@@ -481,27 +526,53 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(880px,94dvh)] sm:max-w-md sm:rounded-none sm:border">
         <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
-          <DialogTitle className="text-lg font-medium">Experimentar virtualmente</DialogTitle>
+          <DialogTitle className="text-base font-medium sm:text-lg">Experimentar virtualmente</DialogTitle>
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
         {phase === "sizes" ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-              <div className="flex gap-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
+              <div className="flex min-w-0 gap-3 sm:gap-4">
                 <img
                   src={product.imageUrl}
                   alt=""
-                  className="h-28 w-21 shrink-0 bg-muted object-cover"
+                  className="h-24 w-[4.5rem] shrink-0 bg-muted object-cover sm:h-28 sm:w-[5.25rem]"
                 />
                 <div>
-                  <h3 className="text-xl font-medium">Escolha os tamanhos</h3>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  <h3 className="text-lg font-medium sm:text-xl">Escolha os tamanhos</h3>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground sm:text-sm sm:leading-6">
                     Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais
                     justa ou mais folgada em você.
                   </p>
                 </div>
               </div>
+              {productImages.length > 1 ? (
+                <fieldset className="mt-6">
+                  <legend className="text-sm font-medium">Fotos do produto (até 3)</legend>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    O Lucy 2.1 usa uma foto por simulação. A primeira selecionada será a referência.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {productImages.map((imageUrl, index) => {
+                      const selected = selectedImages.includes(imageUrl);
+                      return (
+                        <button
+                          key={imageUrl}
+                          type="button"
+                          aria-pressed={selected}
+                          aria-label={`Foto ${index + 1}${selected ? ", selecionada" : ""}`}
+                          onClick={() => toggleProductImage(imageUrl)}
+                          className={`relative size-16 overflow-hidden border-2 ${selected ? "border-foreground" : "border-transparent"}`}
+                        >
+                          <img src={imageUrl} alt={`Foto ${index + 1} de ${product.name}`} className="size-full object-cover" />
+                          {selected ? <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-foreground text-[10px] text-background">✓</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              ) : null}
               <div className="mt-7 space-y-6">
                 <SizeOptions
                   label="Tamanho para experimentar"
@@ -524,7 +595,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 O caimento é uma simulação aproximada: a IA não mede o seu corpo.
               </p>
             </div>
-            <div className="shrink-0 border-t border-border p-4">
+            <div className="shrink-0 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>
                 Continuar
               </Button>
@@ -556,7 +627,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 </p>
               ) : null}
             </div>
-            <div className="flex shrink-0 gap-2 border-t border-border p-4">
+            <div className="flex shrink-0 gap-2 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               {tutorialStep > 0 ? (
                 <Button
                   type="button"
@@ -730,7 +801,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
               </div>
             </div>
 
-            <div className="shrink-0 border-t border-border p-4">
+            <div className="shrink-0 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               {phase === "camera" && cameraStatus === "ready" ? (
                 <>
                   {simulatesFit ? (
@@ -822,11 +893,10 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   ) : null}
                   <div className="flex flex-col gap-2">
                     {result ? (
-                      <Button asChild className="h-12 rounded-none">
-                        <a href={result.url} download={`provador-reserva.${result.extension}`}>
-                          <Download />
-                          Baixar vídeo
-                        </a>
+                      <Button type="button" className="h-12 w-full rounded-none px-3 text-xs sm:text-sm" onClick={() => void saveVideo()}>
+                        <Download />
+                        <span className="sm:hidden">Compartilhar / salvar vídeo</span>
+                        <span className="hidden sm:inline">Baixar ou compartilhar vídeo</span>
                       </Button>
                     ) : null}
                     <div className="flex gap-2">
