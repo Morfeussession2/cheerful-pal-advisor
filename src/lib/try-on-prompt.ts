@@ -1,68 +1,31 @@
-// Prompt do Lucy 2.1 VTON. O modelo segue melhor instruções concretas: o que
-// trocar, como é a peça da imagem de referência (cor, tecido, modelagem,
-// detalhes — recomendação do Decart) e o que deve continuar igual.
-// Os prompts ficam em inglês porque é o idioma em que o modelo foi treinado.
+// Prompt do Lucy VTON 3.5, seguindo o guia da Decart: uma única ação
+// ("Substitute <região> with ..."), descrição fiel da peça da imagem de
+// referência (cor, tecido, modelagem, se está aberta/fechada, detalhes visíveis)
+// e nada de pedidos fora da roupa. Limite do modelo: ~750 caracteres em inglês.
+//
+// Tamanho/caimento não entra no prompt: o modelo ajusta a peça ao corpo da pessoa
+// e ignora instruções como "two sizes too big" (testado no Lucy 2.1 e no VTON 3.5).
 
 export type GarmentKind = "top" | "bottom" | "shoes";
 
-const TARGET: Record<GarmentKind, string> = {
-  top: "the person's current top",
-  bottom: "the person's current pants or shorts",
-  shoes: "the person's current shoes",
-};
-
-const GARMENT_NOUN: Record<GarmentKind, string> = {
-  top: "the outfit",
-  bottom: "the bottoms",
+const REGION: Record<GarmentKind, string> = {
+  top: "the upper body garment",
+  bottom: "the lower body garment",
   shoes: "the footwear",
 };
 
-// Como o caimento aparece em cada região do corpo, do mais apertado ao mais largo.
-const FIT_DETAILS: Record<Exclude<GarmentKind, "shoes">, [string, string, string, string]> = {
-  top: [
-    "stretched across the chest and shoulders, with sleeves and hem visibly too short",
-    "close to the body, with slightly shorter sleeves",
-    "with extra room in the body and sleeves",
-    "with dropped shoulders, sleeves covering part of the hands and a longer hem",
-  ],
-  bottom: [
-    "tight at the waist and thighs, with a visibly shorter length",
-    "close-fitting at the waist and thighs",
-    "with extra room at the waist and legs",
-    "loose at the waist, with wider and longer legs",
-  ],
+const FALLBACK_DESCRIPTION: Record<GarmentKind, string> = {
+  top: "the top from the reference image",
+  bottom: "the bottoms from the reference image",
+  shoes: "the shoes from the reference image",
 };
-
-// Simulação aproximada: o modelo não mede o corpo, só desenha o caimento descrito.
-function fitSentence(garment: GarmentKind, sizeOffset: number) {
-  if (garment === "shoes") return "";
-  const [tighter, snug, loose, looser] = FIT_DETAILS[garment];
-  if (sizeOffset <= -2)
-    return `The garment is two or more sizes too small for this person: very tight, ${tighter}.`;
-  if (sizeOffset === -1)
-    return `The garment is one size smaller than this person usually wears: a snug fit, ${snug}.`;
-  if (sizeOffset === 1)
-    return `The garment is one size larger than this person usually wears: a relaxed fit, ${loose}.`;
-  if (sizeOffset >= 2)
-    return `The garment is two or more sizes too big for this person: oversized and baggy, ${looser}.`;
-  return "The garment fits this person true to size, with its natural cut.";
-}
 
 export interface TryOnPromptInput {
   garment: GarmentKind;
   /** Descrição em inglês da peça da foto de referência (cor, tecido, modelagem, detalhes). */
   description?: string | undefined;
-  /** Posição do tamanho experimentado menos a do tamanho habitual na grade (ex.: G vs M = 1). */
-  sizeOffset?: number | undefined;
 }
 
-export function buildTryOnPrompt({ garment, description, sizeOffset }: TryOnPromptInput) {
-  return [
-    `Substitute ${TARGET[garment]} with ${GARMENT_NOUN[garment]} from the reference image${description ? `: ${description}` : ""}.`,
-    "Match the exact color, material, texture and construction details of the reference garment.",
-    sizeOffset === undefined ? "" : fitSentence(garment, sizeOffset),
-    "Keep the person's face, hair, body shape, pose, other clothes and the background unchanged.",
-  ]
-    .filter(Boolean)
-    .join(" ");
+export function buildTryOnPrompt({ garment, description }: TryOnPromptInput) {
+  return `Substitute ${REGION[garment]} with ${description ?? FALLBACK_DESCRIPTION[garment]}.`;
 }
