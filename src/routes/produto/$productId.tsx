@@ -11,7 +11,7 @@ function ProductDetailRoute() {
 
 export const Route = createFileRoute("/produto/$productId")({
   validateSearch: (search: Record<string, unknown>) => ({
-    tamanho: typeof search.tamanho === "string" && validSizes.includes(search.tamanho) ? search.tamanho : "P",
+    tamanho: typeof search["tamanho"] === "string" && validSizes.includes(search["tamanho"]) ? search["tamanho"] : "P",
   }),
   component: ProductDetailRoute,
   head: () => ({ meta: [{ title: "Detalhes do produto | Reserva" }] }),
