@@ -1,179 +1,204 @@
-import {
-  createDecartClient,
-  models,
-  type QueuePosition,
-  type RealTimeClient,
-  type WebRTCStats,
-} from "@decartai/sdk";
+import { fal } from "@fal-ai/client";
 
-// Sessão realtime do Lucy VTON 3.5, direto na Decart.
+// Sessão realtime do Lucy 2.1 VTON (Decart) na fal.ai.
 //
-// O SDK da Decart cuida do WebRTC (via LiveKit): sinalização, banda mínima da
-// câmera, reconexão e fila. A chave permanente fica no lucy-vton-backend, que
-// emite um token curto restrito a este modelo, a este site e a uma duração
-// máxima de sessão.
+// O WebSocket da fal só faz a sinalização WebRTC (offer/answer/ICE) e carrega
+// os controles do modelo (prompt, imagem da roupa). O vídeo vai direto da
+// câmera para o modelo via WebRTC e volta com a roupa aplicada.
+// A FAL_KEY fica no lucy-vton-backend, que emite um token temporário.
 
-export const VTON_MODEL = models.realtime("lucy-vton-3.5");
+export const LUCY_VTON_APP = "decart/lucy2-vton/realtime";
 
 // Backend de produção por padrão; em dev local use VITE_LUCY_BACKEND_URL=http://localhost:3000.
 const BACKEND_URL = (
   import.meta.env.VITE_LUCY_BACKEND_URL ?? "https://provador-virtual-psi.vercel.app"
 ).replace(/\/+$/, "");
-// Prazo para o vídeo transformado chegar. Cada aviso de posição na fila renova o prazo.
-const CONNECT_TIMEOUT_MS = 30_000;
+const NEGOTIATION_TIMEOUT_MS = 20_000;
+// Tempo de espera por uma mensagem "iceservers" depois do "ready" sem servidores.
+const ICE_SERVER_GRACE_MS = 1_000;
+const FALLBACK_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
-export interface RealtimeQuota {
-  /** `null` = conta sem limite de sessões simultâneas. */
-  limit: number | null;
-  active: number | null;
-  remaining: number | null;
+interface SignalingMessage {
+  type?: string;
+  sdp?: string;
+  candidate?: RTCIceCandidateInit;
+  iceServers?: RTCIceServer[];
+  ice_servers?: RTCIceServer[];
+  iceservers?: RTCIceServer[];
+  error?: string;
+  message?: string;
 }
 
 export interface LucyTryOnOptions {
   localStream: MediaStream;
   /** Instrução para o modelo (veja buildTryOnPrompt). */
   prompt: string;
-  /** URL pública da foto da peça (precisa liberar CORS, o SDK baixa no navegador). */
-  referenceImageUrl: string;
+  /** URLs públicas (ou data URIs) das fotos da peça; a primeira é a principal. */
+  referenceImageUrls: readonly string[];
+  /** Primeiro frame da câmera como data URI, usado para iniciar a geração. */
+  firstFrame?: string | undefined;
   onRemoteStream: (stream: MediaStream) => void;
-  /** Posição na fila da Decart quando todas as vagas estão ocupadas. */
-  onQueuePosition?: (queue: QueuePosition) => void;
   /** Chamado uma única vez; a sessão já está encerrada quando ele dispara. */
   onError: (error: Error) => void;
 }
 
 export interface LucyTryOnSession {
   close: () => void;
-  /** Últimas estatísticas do WebRTC (resolução, fps, banda) para diagnóstico. */
-  getStats: () => WebRTCStats | null;
 }
 
-function stringifyErrorDetail(value: unknown) {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
+// O backend responde o JWT como texto puro; JSON ({ token } ou string) também é aceito.
+function parseToken(body: string) {
+  const text = body.trim();
+  let token = text;
+  if (text.startsWith("{") || text.startsWith('"')) {
+    const parsed = JSON.parse(text) as unknown;
+    token = typeof parsed === "string" ? parsed : ((parsed as { token?: string }).token ?? "");
   }
+  if (!token) throw new Error("Resposta de token realtime inválida");
+  return token;
 }
 
-function normalizeRealtimeError(value: unknown): Error {
-  if (value instanceof Error) return value;
-  if (typeof value !== "object" || value === null) return new Error(String(value));
-
-  const details = value as {
-    code?: unknown;
-    message?: unknown;
-    data?: unknown;
-    cause?: unknown;
-  };
-  const code = typeof details.code === "string" ? details.code : undefined;
-  const message = typeof details.message === "string" ? details.message : undefined;
-  const causeMessage =
-    details.cause instanceof Error
-      ? details.cause.message
-      : details.cause === undefined
-        ? undefined
-        : stringifyErrorDetail(details.cause);
-  const dataMessage = details.data === undefined ? undefined : stringifyErrorDetail(details.data);
-  const summary = [
-    code ? `[${code}]` : undefined,
-    message ?? stringifyErrorDetail(value),
-    causeMessage ? `cause: ${causeMessage}` : undefined,
-    dataMessage ? `data: ${dataMessage}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const normalized = new Error(summary);
-  Object.assign(normalized, { code, data: details.data, cause: details.cause });
-  return normalized;
-}
-
-async function fetchClientToken() {
-  const response = await fetch(`${BACKEND_URL}/api/decart/realtime-token`, { method: "POST" });
+// `app` vem do fal.realtime.connect ("decart/lucy2-vton/realtime") e define para
+// qual modelo o token vale — não pode ser substituído pelo nome deste site.
+async function fetchRealtimeToken(app: string) {
+  const response = await fetch(`${BACKEND_URL}/api/fal/realtime-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ app }),
+  });
   if (!response.ok) throw new Error(`Falha ao obter token realtime (HTTP ${response.status})`);
-  const { apiKey } = (await response.json()) as { apiKey?: string };
-  if (!apiKey) throw new Error("Resposta de token realtime inválida");
-  return apiKey;
-}
-
-/** Vagas de sessão simultânea da conta; `null` se não deu para consultar. */
-export async function fetchRealtimeQuota(): Promise<RealtimeQuota | null> {
-  try {
-    const response = await fetch(`${BACKEND_URL}/api/decart/quota`);
-    return response.ok ? ((await response.json()) as RealtimeQuota) : null;
-  } catch {
-    return null;
-  }
+  return parseToken(await response.text());
 }
 
 export function startLucyTryOn({
   localStream,
   prompt,
-  referenceImageUrl,
+  referenceImageUrls,
+  firstFrame,
   onRemoteStream,
-  onQueuePosition,
   onError,
 }: LucyTryOnOptions): LucyTryOnSession {
-  let client: RealTimeClient | null = null;
+  let peer: RTCPeerConnection | null = null;
   let closed = false;
-  let latestStats: WebRTCStats | null = null;
-  let connectTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    clearTimeout(connectTimer);
-    client?.disconnect();
-    client = null;
-  };
+  let answerReceived = false;
+  let hasRemoteDescription = false;
+  let iceGraceTimer: ReturnType<typeof setTimeout> | undefined;
+  const pendingCandidates: RTCIceCandidateInit[] = [];
 
   const fail = (error: unknown) => {
     if (closed) return;
     close();
-    onError(normalizeRealtimeError(error));
+    onError(error instanceof Error ? error : new Error(String(error)));
   };
 
-  const armConnectTimeout = () => {
-    clearTimeout(connectTimer);
-    connectTimer = setTimeout(
-      () => fail(new Error("O provador não respondeu a tempo")),
-      CONNECT_TIMEOUT_MS,
-    );
-  };
+  const negotiationTimer = setTimeout(
+    () => fail(new Error("O provador não respondeu a tempo")),
+    NEGOTIATION_TIMEOUT_MS,
+  );
 
-  armConnectTimeout();
-  void (async () => {
-    const apiKey = await fetchClientToken();
+  const connection = fal.realtime.connect<Record<string, unknown>, SignalingMessage>(
+    LUCY_VTON_APP,
+    {
+      connectionKey: `lucy-vton-${crypto.randomUUID()}`,
+      // Sem throttle: o throttle padrão descartaria candidatos ICE da sinalização.
+      throttleInterval: 0,
+      tokenProvider: (app) =>
+        fetchRealtimeToken(app).catch((error: unknown) => {
+          fail(error);
+          throw error;
+        }),
+      onResult: (message) => {
+        void handleMessage(message).catch(fail);
+      },
+      onError: fail,
+    },
+  );
+
+  function close() {
     if (closed) return;
-    const realtime = await createDecartClient({ apiKey }).realtime.connect(localStream, {
-      model: VTON_MODEL,
-      // Câmera frontal: espelha antes de enviar, e a saída já vem como num espelho.
-      mirror: true,
-      onRemoteStream: (stream) => {
-        clearTimeout(connectTimer);
-        onRemoteStream(stream);
-      },
-      onQueuePosition: (queue) => {
-        armConnectTimeout();
-        onQueuePosition?.(queue);
-      },
-      // Prompt já detalhado: sem a reescrita automática da Decart.
-      initialState: { prompt: { text: prompt, enhance: false }, image: referenceImageUrl },
-    });
-    // connect() não pode ser cancelado: se a pessoa desistiu no meio, encerra na hora.
-    if (closed) {
-      realtime.disconnect();
-      return;
-    }
-    client = realtime;
-    realtime.on("error", fail);
-    realtime.on("stats", (stats) => {
-      latestStats = stats;
-    });
-    realtime.on("connectionChange", (state) => {
-      if (state === "disconnected") fail(new Error("A conexão com o provador caiu"));
-    });
-  })().catch(fail);
+    closed = true;
+    clearTimeout(negotiationTimer);
+    clearTimeout(iceGraceTimer);
+    connection.close();
+    peer?.close();
+    peer = null;
+  }
 
-  return { close, getStats: () => latestStats };
+  const sendSignal = (message: Record<string, unknown>) => {
+    if (!closed) connection.send(message);
+  };
+
+  const initializePeer = async (iceServers?: RTCIceServer[]) => {
+    if (peer || closed) return;
+    clearTimeout(iceGraceTimer);
+    const pc = new RTCPeerConnection({
+      iceServers: iceServers?.length ? iceServers : FALLBACK_ICE_SERVERS,
+    });
+    peer = pc;
+    for (const track of localStream.getVideoTracks()) pc.addTrack(track, localStream);
+    pc.ontrack = (event) => onRemoteStream(event.streams[0] ?? new MediaStream([event.track]));
+    pc.onicecandidate = ({ candidate }) => {
+      if (!candidate) return;
+      sendSignal({
+        type: "icecandidate",
+        candidate: {
+          candidate: candidate.candidate,
+          sdpMid: candidate.sdpMid,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+        },
+      });
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed")
+        fail(new Error("A conexão de vídeo com o provador caiu"));
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal({ type: "offer", sdp: offer.sdp });
+  };
+
+  const handleMessage = async (message: SignalingMessage) => {
+    if (closed) return;
+    const iceServers = message.iceServers ?? message.ice_servers ?? message.iceservers;
+    switch (message.type?.toLowerCase()) {
+      case "ready":
+        if (iceServers) await initializePeer(iceServers);
+        else
+          iceGraceTimer = setTimeout(() => void initializePeer().catch(fail), ICE_SERVER_GRACE_MS);
+        break;
+      case "iceservers":
+        await initializePeer(iceServers);
+        break;
+      case "answer": {
+        const pc = peer;
+        // Idempotente: uma resposta repetida não pode derrubar uma sessão ativa.
+        if (!pc || !message.sdp || answerReceived) return;
+        answerReceived = true;
+        await pc.setRemoteDescription({ type: "answer", sdp: message.sdp });
+        hasRemoteDescription = true;
+        clearTimeout(negotiationTimer);
+        for (const candidate of pendingCandidates.splice(0)) await pc.addIceCandidate(candidate);
+        break;
+      }
+      case "icecandidate":
+        if (!message.candidate) return;
+        if (peer && hasRemoteDescription) await peer.addIceCandidate(message.candidate);
+        else pendingCandidates.push(message.candidate);
+        break;
+      case "error":
+        fail(new Error(message.error ?? message.message ?? "O provador retornou um erro"));
+        break;
+    }
+  };
+
+  // A primeira mensagem abre o WebSocket e inicia a sessão no modelo.
+  const references = referenceImageUrls.filter(Boolean).slice(0, 3);
+  connection.send({
+    prompt,
+    reference_image_url: references[0],
+    ...(references.length > 1 ? { reference_image_urls: references } : {}),
+    ...(firstFrame ? { image_url: firstFrame } : {}),
+  });
+
+  return { close };
 }
