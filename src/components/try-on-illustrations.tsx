@@ -29,67 +29,19 @@ function Person({ x, y }: { x: number; y: number }) {
 
 export function PhoneStandIllustration({ className }: IllustrationProps) {
   return (
-    <svg viewBox="0 0 200 140" aria-hidden="true" className={className}>
-      <line x1="12" y1="120" x2="188" y2="120" {...line} />
-      {/* livros servindo de apoio */}
-      <rect x="106" y="100" width="60" height="20" rx="2" {...line} />
-      <rect x="112" y="82" width="50" height="18" rx="2" {...line} />
-      <rect x="108" y="66" width="56" height="16" rx="2" {...line} />
-      {/* celular em pé, encostado nos livros */}
-      <g transform="rotate(12 91 120)">
-        <rect x="86" y="40" width="10" height="80" rx="3" {...line} strokeWidth={2.5} />
-      </g>
-      <circle cx="99" cy="49" r="2" fill="currentColor" />
-      {/* campo de visão da câmera frontal */}
-      <path d="M96 50 L18 24 M96 50 L18 104" {...line} strokeDasharray="4 5" opacity={0.55} />
-    </svg>
+    <img src="/guiadaprova/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_07_15.png" alt="" aria-hidden="true" className={className} />
   );
 }
 
-export function DistanceIllustration({
-  className,
-  framing,
-}: IllustrationProps & { framing: TryOnFraming }) {
+export function DistanceIllustration({ className }: IllustrationProps & { framing: TryOnFraming }) {
   return (
-    <svg viewBox="0 0 200 140" aria-hidden="true" className={className}>
-      <line x1="8" y1="124" x2="192" y2="124" {...line} />
-      <rect x="14" y="100" width="30" height="24" rx="2" {...line} />
-      <rect x="22" y="70" width="14" height="28" rx="3" {...line} />
-      <circle cx="29" cy="75" r="1.5" fill="currentColor" />
-      <Person x={160} y={34} />
-      {/* área que precisa aparecer na câmera */}
-      <rect
-        x="134"
-        y="20"
-        width="52"
-        height={framing === "upper" ? 74 : 108}
-        {...line}
-        strokeWidth={1.5}
-        strokeDasharray="4 4"
-        opacity={0.6}
-      />
-      <path d="M52 116 L128 116 M58 111 L52 116 L58 121 M122 111 L128 116 L122 121" {...line} />
-      <text x="90" y="107" textAnchor="middle" fontSize="11" fill="currentColor">
-        {framing === "upper" ? "1 a 1,5 m" : "2 a 2,5 m"}
-      </text>
-    </svg>
+    <img src="/guiadaprova/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_09_08.png" alt="" aria-hidden="true" className={className} />
   );
 }
 
 export function LightIllustration({ className }: IllustrationProps) {
   return (
-    <svg viewBox="0 0 200 140" aria-hidden="true" className={className}>
-      {/* fundo liso */}
-      <rect x="112" y="10" width="78" height="114" {...line} strokeWidth={1.5} opacity={0.4} />
-      <Person x={151} y={34} />
-      {/* luz vindo de frente */}
-      <circle cx="36" cy="40" r="11" {...line} />
-      <path
-        d="M36 20 L36 24 M36 56 L36 60 M16 40 L20 40 M52 40 L56 40 M22 26 L25 29 M47 51 L50 54 M22 54 L25 51 M47 29 L50 26"
-        {...line}
-      />
-      <path d="M58 46 L128 56 M58 56 L128 92" {...line} strokeDasharray="4 5" opacity={0.55} />
-    </svg>
+    <img src="/guiadaprova/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_09_50.png" alt="" aria-hidden="true" className={className} />
   );
 }
 
