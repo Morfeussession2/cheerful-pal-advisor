@@ -73,11 +73,11 @@ function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBu
   const visibleSizes = sizes.slice(startIndex, startIndex + 4);
 
   return (
-    <div className="grid grid-cols-2 gap-2 bg-background/95 p-2 shadow-sm xl:flex xl:items-center xl:justify-between xl:gap-1" role="group" aria-label={`Tamanhos e ações para ${productName}`}>
+    <div className="grid grid-cols-2 gap-1.5 bg-background/95 p-2 shadow-sm xl:flex xl:items-center xl:justify-between xl:gap-1" role="group" aria-label={`Tamanhos e ações para ${productName}`}>
       <div className="col-span-2 flex min-w-0 items-center justify-center gap-1 xl:flex-1 xl:justify-start">
         <div className="flex min-w-0 items-center gap-1 overflow-hidden" aria-label={`Selecione o tamanho de ${productName}`}>
           {visibleSizes.map((size) => (
-            <button key={size} type="button" aria-label={`Tamanho ${size}`} aria-pressed={selectedSize === size} onClick={() => setSelectedSize(size)} className={`grid size-8 shrink-0 place-items-center rounded-full border text-[10px] ${selectedSize === size ? "border-foreground bg-foreground text-background" : "border-border bg-background text-foreground"}`}>
+            <button key={size} type="button" aria-label={`Tamanho ${size}`} aria-pressed={selectedSize === size} onClick={() => setSelectedSize(size)} className={`grid size-7 shrink-0 place-items-center rounded-full border text-[10px] sm:size-8 ${selectedSize === size ? "border-foreground bg-foreground text-background" : "border-border bg-background text-foreground"}`}>
               {size}
             </button>
           ))}
@@ -85,8 +85,8 @@ function SizeSlider({ productName, onBuy, onTryOn }: { productName: string; onBu
         {startIndex > 0 ? <button type="button" aria-label="Tamanhos anteriores" onClick={() => setStartIndex(0)} className="grid size-7 shrink-0 place-items-center"><ArrowLeft className="size-3.5" /></button> : null}
         {startIndex === 0 ? <button type="button" aria-label="Próximos tamanhos" onClick={() => setStartIndex(1)} className="grid size-7 shrink-0 place-items-center"><ChevronRight className="size-3.5" /></button> : null}
       </div>
-      <Button type="button" size="sm" className="h-9 w-full rounded-none px-2 text-xs xl:w-auto" onClick={() => onBuy(selectedSize)}>Comprar</Button>
-      <Button type="button" size="sm" variant="outline" className="h-9 w-full rounded-none px-2 text-xs xl:w-auto" onClick={() => onTryOn(selectedSize)}><Sparkles className="size-3.5" />Experimentar</Button>
+      <Button type="button" size="sm" className="h-9 w-full min-w-0 rounded-none px-1 text-[11px] sm:text-xs xl:w-auto" onClick={() => onBuy(selectedSize)}>Comprar</Button>
+      <Button type="button" size="sm" variant="outline" className="h-9 w-full min-w-0 gap-1 rounded-none px-1 text-[11px] sm:text-xs xl:w-auto" onClick={() => onTryOn(selectedSize)}><Sparkles className="size-3.5 shrink-0" />Experimentar</Button>
     </div>
   );
 }

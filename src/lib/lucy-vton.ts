@@ -73,7 +73,7 @@ async function fetchRealtimeToken(app: string) {
 export function startLucyTryOn({
   localStream,
   prompt,
-  referenceImageUrl,
+  referenceImageUrls,
   firstFrame,
   onRemoteStream,
   onError,
@@ -192,9 +192,11 @@ export function startLucyTryOn({
   };
 
   // A primeira mensagem abre o WebSocket e inicia a sessão no modelo.
+  const references = referenceImageUrls.filter(Boolean).slice(0, 3);
   connection.send({
     prompt,
-    reference_image_url: referenceImageUrl,
+    reference_image_url: references[0],
+    ...(references.length > 1 ? { reference_image_urls: references } : {}),
     ...(firstFrame ? { image_url: firstFrame } : {}),
   });
 
