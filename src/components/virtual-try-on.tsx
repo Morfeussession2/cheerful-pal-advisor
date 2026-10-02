@@ -1,12 +1,4 @@
-import {
-  Camera,
-  CircleStop,
-  Download,
-  LoaderCircle,
-  RefreshCcw,
-  Ruler,
-  Sparkles,
-} from "lucide-react";
+import { Camera, Check, CircleStop, Download, LoaderCircle, RefreshCcw, Share2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -24,67 +16,51 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { loadBodyMeasurer, startBodySampling, type BodySampler } from "@/lib/body-measure";
-import { fetchRealtimeQuota, startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
-import {
-  isValidProfile,
-  recommendSize,
-  type BodyProfile,
-  type SizeChartRow,
-  type SizeRecommendation,
-} from "@/lib/size-recommendation";
+import { startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
 import { buildTryOnPrompt, type GarmentKind } from "@/lib/try-on-prompt";
-import {
-  preloadWatermark,
-  startVideoRecording,
-  type VideoRecording,
-  type Watermark,
-} from "@/lib/video-recording";
 
 export interface TryOnProduct {
   name: string;
-  /** Foto da peça, usada como referência pelo modelo. */
+  /** Foto principal da peça, usada como referência pelo modelo. */
   imageUrl: string;
-  /** Outras fotos reais da mesma peça, quando disponíveis no catálogo. */
-  imageUrls?: readonly string[];
+  /** Fotos extras da peça (ângulos diferentes); a pessoa escolhe até 3. */
+  images?: readonly string[] | undefined;
   garment: GarmentKind;
   /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
   description?: string | undefined;
   /** Grade de tamanhos, do menor para o maior. */
   sizes: readonly string[];
-  /** Tamanho inicialmente escolhido no catálogo. */
+  /** Tamanho escolhido na página do produto. */
   size: string;
-  /** Tabela de medidas do corpo por tamanho; sem ela não há recomendação de tamanho. */
-  sizeChart?: readonly SizeChartRow[] | undefined;
 }
 
 interface VirtualTryOnProps {
   open: boolean;
   product: TryOnProduct;
-  /** Marca da loja gravada no canto inferior direito do vídeo. */
-  watermark?: Watermark | undefined;
   onOpenChange: (open: boolean) => void;
 }
 
 type Phase =
-  "sizes" | "profile" | "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
+  | "photos"
+  | "sizes"
+  | "tutorial"
+  | "camera"
+  | "countdown"
+  | "connecting"
+  | "live"
+  | "result"
+  | "error";
 type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 
 // Tempo para a pessoa se afastar do celular depois de tocar em "Começar".
 const POSITIONING_SECONDS = 5;
-// Duração máxima da gravação (e da sessão realtime, que a Decart cobra por segundo).
+// Duração máxima da gravação (e da sessão realtime, que a fal.ai cobra por segundo).
 const MAX_SESSION_SECONDS = 5;
-// Espera (escondida, sob o "Vestindo…") para o WebRTC subir a banda antes de gravar:
-// os primeiros instantes da conexão vêm com a imagem bem pior.
-const WARMUP_MS = 1500;
-const RECORDING_BITRATE = 8_000_000;
-// Fila própria quando a conta da Decart está no limite de sessões simultâneas.
-const SLOT_POLL_MS = 2_000;
-const SLOT_WAIT_MAX_MS = 120_000;
-const PROFILE_KEY = "reserva:perfil-corpo";
+const MAX_REFERENCE_IMAGES = 3;
+const RECORDER_TYPES = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
 const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
 
+// O tamanho habitual é só uma conveniência deste aparelho; sem storage, a pessoa escolhe de novo.
 function readUsualSize() {
   try {
     return window.localStorage.getItem(USUAL_SIZE_KEY);
@@ -111,6 +87,11 @@ function fitLabel(sizeOffset: number | undefined) {
   return "Bem larga: dois ou mais tamanhos acima do seu.";
 }
 
+// iOS/Safari não baixa blobs via <a download>; o caminho é a folha de compartilhamento.
+function canShareFiles() {
+  return typeof navigator !== "undefined" && typeof navigator.share === "function";
+}
+
 function SizeOptions({
   label,
   sizes,
@@ -125,7 +106,7 @@ function SizeOptions({
   allowUnknown?: boolean;
 }) {
   const chip = (selected: boolean) =>
-    `h-11 min-w-11 rounded-full border px-3 text-xs ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background"}`;
+    `h-11 min-w-11 rounded-full border px-3 text-xs transition-colors ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background hover:border-foreground"}`;
   return (
     <fieldset>
       <legend className="text-sm font-medium">{label}</legend>
@@ -156,71 +137,22 @@ function SizeOptions({
   );
 }
 
-// Altura e peso ficam só neste aparelho, para não perguntar de novo.
-function readProfile(): BodyProfile | null {
-  try {
-    const stored = JSON.parse(
-      window.localStorage.getItem(PROFILE_KEY) ?? "null",
-    ) as Partial<BodyProfile> | null;
-    return isValidProfile(stored) ? stored : null;
-  } catch {
-    return null;
-  }
+// Para o gravador sem gerar o vídeo final.
+function discardRecorder(recorder: MediaRecorder | null) {
+  if (!recorder) return;
+  recorder.ondataavailable = null;
+  recorder.onstop = null;
+  if (recorder.state !== "inactive") recorder.stop();
 }
 
-function saveProfile(profile: BodyProfile) {
-  try {
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-  } catch {
-    // Sem storage disponível: segue sem lembrar.
-  }
-}
-
-// Aceita "175", "1,75" ou "1.75" (metros viram centímetros).
-function parseProfile(heightInput: string, weightInput: string): Partial<BodyProfile> {
-  const height = Number(heightInput.replace(",", "."));
-  return {
-    heightCm: height > 0 && height < 3 ? Math.round(height * 100) : height,
-    weightKg: Number(weightInput.replace(",", ".")),
-  };
-}
-
-function recommendationReason({ alternative, basis, size, usedCamera }: SizeRecommendation) {
-  if (basis === "ombros") {
-    return "Seus ombros são largos para a sua altura, então sugerimos um tamanho acima do que altura e peso indicam.";
-  }
-  if (alternative) {
-    const [smaller, larger] =
-      alternative.when === "folgado" ? [size, alternative.size] : [alternative.size, size];
-    return `Você está entre ${smaller} e ${larger}: vá de ${alternative.size} se prefere mais ${alternative.when}.`;
-  }
-  return usedCamera
-    ? "Pela sua altura, seu peso e a largura dos ombros medida pela câmera."
-    : "Pela sua altura e seu peso.";
-}
-
-// Só em desenvolvimento: mostra no console a qualidade real do vídeo enviado ao modelo
-// e do vídeo recebido, para separar problema de conexão de limitação do modelo.
-function logSessionStats(session: LucyTryOnSession) {
-  const stats = session.getStats();
-  if (!stats) return;
-  const { outboundVideo: sent, video: received } = stats;
-  console.table([
-    sent && {
-      direção: "câmera → Lucy",
-      resolução: `${sent.frameWidth}x${sent.frameHeight}`,
-      fps: sent.framesPerSecond,
-      kbps: Math.round(sent.bitrate / 1000),
-      limitação: sent.qualityLimitationReason,
-    },
-    received && {
-      direção: "Lucy → tela",
-      resolução: `${received.frameWidth}x${received.frameHeight}`,
-      fps: received.framesPerSecond,
-      kbps: Math.round(received.bitrate / 1000),
-      "pacotes perdidos": received.packetsLost,
-    },
-  ]);
+function captureFrame(video: HTMLVideoElement | null) {
+  if (!video?.videoWidth) return undefined;
+  const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.85);
 }
 
 function tutorialSteps(framing: TryOnFraming) {
@@ -257,34 +189,31 @@ function StageMessage({ children }: { children: ReactNode }) {
   );
 }
 
-export function VirtualTryOn({ open, product, watermark, onOpenChange }: VirtualTryOnProps) {
+export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps) {
   const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
   const steps = tutorialSteps(framing);
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
   const simulatesFit = product.garment !== "shoes";
-  const firstPhase: Phase = "sizes";
+  const gallery = [product.imageUrl, ...(product.images ?? [])].filter(
+    (url, index, all) => all.indexOf(url) === index,
+  );
+  const hasGallery = gallery.length > 1;
+  const firstPhase: Phase = hasGallery ? "photos" : simulatesFit ? "sizes" : "tutorial";
 
   const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
-  const [trySize, setTrySize] = useState(product.size);
-  const productImages = [...new Set([product.imageUrl, ...(product.imageUrls ?? [])])];
   const [selectedImages, setSelectedImages] = useState<string[]>([product.imageUrl]);
+  const [trySize, setTrySize] = useState(product.size);
   const [usualSize, setUsualSize] = useState<string | null>(null);
-  // Recomendação de tamanho: precisa da tabela de medidas (calçados não têm).
-  const sizeChart = product.garment === "shoes" ? undefined : product.sizeChart;
-  const canRecommend = Boolean(sizeChart);
-  const [profile, setProfile] = useState<BodyProfile | null>(null);
-  const [heightInput, setHeightInput] = useState("");
-  const [weightInput, setWeightInput] = useState("");
-  const [recommendation, setRecommendation] = useState<SizeRecommendation | null>(null);
+  // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
+  const [skipTutorial, setSkipTutorial] = useState(false);
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
   const [countdown, setCountdown] = useState(POSITIONING_SECONDS);
   const [secondsLeft, setSecondsLeft] = useState(MAX_SESSION_SECONDS);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  // Aviso de fila enquanto conecta (vaga ocupada ou posição na fila da Decart).
-  const [queueText, setQueueText] = useState("");
-  const [result, setResult] = useState<{ url: string; extension: string; blob: Blob } | null>(null);
+  const [result, setResult] = useState<{ url: string; blob: Blob; extension: string } | null>(null);
   const [resultPending, setResultPending] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState("");
   const [error, setError] = useState("");
 
   const openRef = useRef(open);
@@ -292,31 +221,23 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const sessionRef = useRef<LucyTryOnSession | null>(null);
-  const sessionStartingRef = useRef(false);
-  const countdownActiveRef = useRef(false);
-  // Cada conexão ganha um número; cancelar incrementa e invalida a espera por vaga em curso.
-  const attemptRef = useRef(0);
-  const recordingRef = useRef<VideoRecording | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const warmupRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const samplerRef = useRef<BodySampler | null>(null);
 
   const stopTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
-    countdownActiveRef.current = false;
   };
 
   const closeSession = () => {
     sessionRef.current?.close();
     sessionRef.current = null;
-    sessionStartingRef.current = false;
     setRemoteStream(null);
   };
 
   const discardRecording = () => {
-    recordingRef.current?.discard();
-    recordingRef.current = null;
+    discardRecorder(recorderRef.current);
+    recorderRef.current = null;
   };
 
   const releaseCamera = () => {
@@ -331,22 +252,16 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       return null;
     });
     setResultPending(false);
+    setShareFeedback("");
   };
 
   const teardown = useCallback(() => {
-    attemptRef.current += 1;
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
-    countdownActiveRef.current = false;
-    if (warmupRef.current) clearTimeout(warmupRef.current);
-    warmupRef.current = null;
-    recordingRef.current?.discard();
-    recordingRef.current = null;
-    samplerRef.current?.stop();
-    samplerRef.current = null;
+    discardRecorder(recorderRef.current);
+    recorderRef.current = null;
     sessionRef.current?.close();
     sessionRef.current = null;
-    sessionStartingRef.current = false;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
   }, []);
@@ -354,15 +269,9 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   useEffect(() => {
     openRef.current = open;
     if (open) {
-      setSelectedImages([product.imageUrl]);
       setTrySize(product.size);
-      const savedUsualSize = readUsualSize();
-      setUsualSize(product.sizes.includes(savedUsualSize ?? "") ? savedUsualSize : null);
-      const stored = readProfile();
-      setProfile(stored);
-      setHeightInput(stored ? String(stored.heightCm) : "");
-      setWeightInput(stored ? String(stored.weightKg) : "");
-      setPhase(firstPhase);
+      setUsualSize(readUsualSize());
+      setSelectedImages([product.imageUrl]);
       return;
     }
     teardown();
@@ -371,20 +280,16 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       return null;
     });
     setResultPending(false);
+    setShareFeedback("");
     setPhase(firstPhase);
     setTutorialStep(0);
+    setSkipTutorial(false);
     setCameraStatus("idle");
     setRemoteStream(null);
-    setRecommendation(null);
     setError("");
-  }, [open, teardown, product.imageUrl, canRecommend]);
+  }, [open, teardown, product.size, product.imageUrl, firstPhase]);
 
   useEffect(() => teardown, [teardown]);
-
-  // Deixa a logo carregada antes de a gravação começar.
-  useEffect(() => {
-    if (open && watermark) preloadWatermark(watermark);
-  }, [open, watermark]);
 
   useEffect(() => {
     const video = localVideoRef.current;
@@ -415,11 +320,21 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   });
 
+  const toggleImage = (url: string) => {
+    setSelectedImages((current) => {
+      if (current.includes(url)) {
+        // Sempre mantém ao menos uma referência.
+        return current.length > 1 ? current.filter((item) => item !== url) : current;
+      }
+      if (current.length >= MAX_REFERENCE_IMAGES) return current;
+      return [...current, url];
+    });
+  };
+
   const openCamera = async () => {
     setPhase("camera");
+    setSkipTutorial(true);
     setError("");
-    // Deixa o detector de pose carregando para estar pronto na hora de medir.
-    if (sizeChart && profile) void loadBodyMeasurer().catch(() => undefined);
     if (localStreamRef.current) {
       setCameraStatus("ready");
       return;
@@ -457,36 +372,18 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     setPhase("tutorial");
   };
 
-  const editProfile = () => {
+  const showSizes = () => {
     releaseCamera();
-    setPhase("profile");
-  };
-
-  const draftProfile = parseProfile(heightInput, weightInput);
-
-  const confirmProfile = () => {
-    if (!isValidProfile(draftProfile)) return;
-    saveProfile(draftProfile);
-    setProfile(draftProfile);
-    setTutorialStep(0);
-    setPhase("tutorial");
+    setPhase("sizes");
   };
 
   const confirmSizes = () => {
     saveUsualSize(usualSize);
-    setTutorialStep(0);
-    setPhase(canRecommend && !profile ? "profile" : "tutorial");
-  };
-
-  const stopSampling = () => {
-    const measurements = samplerRef.current?.stop() ?? null;
-    samplerRef.current = null;
-    return measurements;
+    if (skipTutorial) void openCamera();
+    else setPhase("tutorial");
   };
 
   const startCountdown = () => {
-    if (countdownActiveRef.current || phase !== "camera" || cameraStatus !== "ready") return;
-    countdownActiveRef.current = true;
     setError("");
     setCountdown(POSITIONING_SECONDS);
     setPhase("countdown");
@@ -498,149 +395,103 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
         return;
       }
       stopTimer();
-      void connect();
+      connect();
     }, 1000);
   };
 
-  const waitForSlot = async (attempt: number) => {
-    const deadline = Date.now() + SLOT_WAIT_MAX_MS;
-    while (attemptRef.current === attempt) {
-      const quota = await fetchRealtimeQuota();
-      if (!quota || quota.remaining === null || quota.remaining > 0) return true;
-      if (Date.now() > deadline) return false;
-      setQueueText("Provador cheio no momento. Você entra assim que liberar uma vaga.");
-      await new Promise((resolve) => setTimeout(resolve, SLOT_POLL_MS));
-    }
-    return false;
-  };
-
-  const connect = async () => {
-    if (sessionStartingRef.current || sessionRef.current) return;
+  // Só aqui a câmera passa a ser transmitida e a sessão da fal.ai começa a contar.
+  const connect = () => {
     const stream = localStreamRef.current;
     if (!stream) {
       void openCamera();
       return;
     }
-    sessionStartingRef.current = true;
-    const attempt = ++attemptRef.current;
-    setQueueText("");
     setPhase("connecting");
-    // Mede os ombros na câmera crua enquanto a pessoa fica parada na posição.
-    stopSampling();
-    samplerRef.current =
-      sizeChart && profile && localVideoRef.current
-        ? startBodySampling(localVideoRef.current, profile.heightCm)
-        : null;
-    const hasSlot = await waitForSlot(attempt);
-    if (attemptRef.current !== attempt) return;
-    if (!hasSlot) {
-      stopSampling();
-      sessionStartingRef.current = false;
-      setError("O provador está cheio agora. Tente de novo em alguns instantes.");
-      setPhase("error");
-      return;
-    }
-    setQueueText("");
     const prompt = buildTryOnPrompt({
       garment: product.garment,
       description: product.description,
+      sizeOffset: simulatesFit ? sizeOffset : undefined,
     });
-    const referenceImageUrl = new URL(
-      selectedImages[0] ?? product.imageUrl,
-      window.location.origin,
-    ).href;
     if (import.meta.env.DEV) console.info("Lucy VTON prompt:", prompt);
     sessionRef.current = startLucyTryOn({
       localStream: stream,
       prompt,
-      // O modelo usa uma foto de referência por sessão: vale a primeira selecionada.
-      referenceImageUrl,
+      referenceImageUrls: selectedImages,
+      firstFrame: captureFrame(localVideoRef.current),
       onRemoteStream: setRemoteStream,
-      onQueuePosition: ({ position }) =>
-        setQueueText(`Provador cheio: você é o ${position}º da fila.`),
       onError: (sessionError) => {
         console.error("Lucy VTON:", sessionError);
         sessionRef.current = null;
-        sessionStartingRef.current = false;
-        if (recordingRef.current) {
+        if (recorderRef.current) {
           finish();
           setError("A conexão caiu no meio da sessão. Salvamos o que foi gravado até ali.");
           return;
         }
         stopTimer();
-        releaseCamera();
-        stopSampling();
         setRemoteStream(null);
-        const hitConcurrentLimit = /concurrent session limit reached|\b1013\b/i.test(sessionError.message);
-        setError(
-          hitConcurrentLimit
-            ? "A Decart já está usando todas as sessões simultâneas disponíveis. Feche o provador em outra aba ou dispositivo e aguarde alguns instantes antes de tentar novamente."
-            : "Não conseguimos conectar ao provador. Verifique sua internet e tente novamente.",
-        );
+        setError("Não conseguimos conectar ao provador. Verifique sua internet e tente novamente.");
         setPhase("error");
       },
     });
   };
 
-  // Disparado quando o vídeo com a roupa aplicada começa a tocar; o ao vivo e a gravação
-  // começam depois do aquecimento. Um stream só com áudio também "toca": espera o vídeo.
-  const goLive = () => {
-    if (phase !== "connecting" || !remoteStream?.getVideoTracks().length || warmupRef.current)
+  const startRecording = (stream: MediaStream) => {
+    if (typeof MediaRecorder === "undefined") return;
+    const mimeType = RECORDER_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
+    if (!mimeType) return;
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, { mimeType });
+    } catch {
       return;
-    warmupRef.current = setTimeout(() => {
-      warmupRef.current = null;
-      setPhase("live");
-      const video = remoteVideoRef.current;
-      recordingRef.current =
-        video && startVideoRecording(video, { watermark, bitsPerSecond: RECORDING_BITRATE });
-      let remaining = MAX_SESSION_SECONDS;
+    }
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      setResultPending(false);
+      if (!chunks.length) return;
+      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
+      setResult({
+        url: URL.createObjectURL(blob),
+        blob,
+        extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm",
+      });
+    };
+    recorder.start(1000);
+    recorderRef.current = recorder;
+  };
+
+  // Disparado quando o vídeo com a roupa aplicada começa a tocar.
+  const goLive = () => {
+    if (phase !== "connecting" || !remoteStream) return;
+    setPhase("live");
+    startRecording(remoteStream);
+    let remaining = MAX_SESSION_SECONDS;
+    setSecondsLeft(remaining);
+    timerRef.current = setInterval(() => {
+      remaining -= 1;
       setSecondsLeft(remaining);
-      timerRef.current = setInterval(() => {
-        remaining -= 1;
-        setSecondsLeft(remaining);
-        if (remaining <= 0) finish();
-      }, 1000);
-    }, WARMUP_MS);
+      if (remaining <= 0) finish();
+    }, 1000);
   };
 
   const finish = () => {
     stopTimer();
-    const recording = recordingRef.current;
-    recordingRef.current = null;
-    if (recording) {
-      // Se o popup fechar antes de o vídeo ficar pronto, o resultado é descartado.
-      const attempt = attemptRef.current;
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    if (recorder && recorder.state !== "inactive") {
       setResultPending(true);
-      void recording.stop().then((video) => {
-        if (attemptRef.current !== attempt) return;
-        setResultPending(false);
-        if (video) {
-          setResult({
-            url: URL.createObjectURL(video.blob),
-            extension: video.extension,
-            blob: video.blob,
-          });
-        }
-      });
+      recorder.stop();
     }
-    const measurements = stopSampling();
-    if (sizeChart && profile) {
-      const next = recommendSize(product.garment, sizeChart, profile, measurements);
-      if (import.meta.env.DEV)
-        console.info("Recomendação de tamanho:", next, "câmera:", measurements);
-      setRecommendation(next);
-    }
-    const session = sessionRef.current;
-    if (import.meta.env.DEV && session) logSessionStats(session);
     closeSession();
     releaseCamera();
     setPhase("result");
   };
 
   const backToCamera = () => {
-    attemptRef.current += 1;
     stopTimer();
-    stopSampling();
     discardRecording();
     closeSession();
     setPhase("camera");
@@ -651,42 +502,28 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     void openCamera();
   };
 
-  const saveVideo = async () => {
+  // No iOS, "baixar" um blob não funciona: abrimos a folha de compartilhamento,
+  // que permite salvar o vídeo no app Fotos/Arquivos.
+  const shareResult = async () => {
     if (!result) return;
-    const filename = `provador-reserva.${result.extension}`;
-    const shareData = { files: [new File([result.blob], filename, { type: result.blob.type })] };
-
-    try {
-      if (navigator.share && navigator.canShare?.(shareData)) {
-        await navigator.share(shareData);
-        return;
-      }
-    } catch (shareError) {
-      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
-    }
-
-    const isIOS =
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-    if (isIOS) {
-      window.open(result.url, "_blank", "noopener,noreferrer");
-      return;
-    }
-
-    const link = document.createElement("a");
-    link.href = result.url;
-    link.download = filename;
-    link.click();
-  };
-
-  const toggleProductImage = (imageUrl: string) => {
-    setSelectedImages((current) => {
-      if (current.includes(imageUrl)) {
-        const remaining = current.filter((item) => item !== imageUrl);
-        return remaining.length ? remaining : current;
-      }
-      return current.length < 3 ? [...current, imageUrl] : current;
+    setShareFeedback("");
+    const file = new File([result.blob], `provador-reserva.${result.extension}`, {
+      type: result.blob.type,
     });
+    if (canShareFiles() && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "Meu provador Reserva" });
+        return;
+      } catch (shareError) {
+        if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+      }
+    }
+    // Fallback: download tradicional (desktop e Android sem share de arquivos).
+    const anchor = document.createElement("a");
+    anchor.href = result.url;
+    anchor.download = `provador-reserva.${result.extension}`;
+    anchor.click();
+    setShareFeedback("Se o download não iniciar, toque e segure o vídeo e escolha Salvar.");
   };
 
   const tryIndex = product.sizes.indexOf(trySize);
@@ -700,93 +537,174 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     framing === "upper"
       ? "Encaixe cabeça, ombros e tronco na silhueta"
       : "Encaixe o corpo inteiro na silhueta";
+  const footerButton = "h-12 rounded-none text-sm sm:text-xs md:text-sm";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(880px,94dvh)] sm:max-w-md sm:rounded-none sm:border">
         <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
-          <DialogTitle className="text-base font-medium sm:text-lg">
+          <DialogTitle className="flex items-center gap-2 text-lg font-medium">
+            <Sparkles className="size-4" />
             Experimentar virtualmente
           </DialogTitle>
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        {phase === "sizes" ? (
+        {phase === "photos" ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
-              <div className="flex min-w-0 gap-3 sm:gap-4">
-                <img src={product.imageUrl} alt="" className="h-24 w-[4.5rem] shrink-0 bg-muted object-cover sm:h-28 sm:w-[5.25rem]" />
-                <div>
-                  <h3 className="text-lg font-medium sm:text-xl">{simulatesFit ? "Escolha tamanho e fotos" : "Escolha numeração e fotos"}</h3>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground sm:text-sm sm:leading-6">{simulatesFit ? "Escolha o tamanho que deseja simular e, se quiser, compare com o que costuma usar." : "Escolha o número do calçado e as fotos que deseja usar como referência."}</p>
-                </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <h3 className="text-xl font-medium">Escolha as fotos da peça</h3>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Selecione até {MAX_REFERENCE_IMAGES} ângulos da peça. Quanto mais referências, melhor
+                a IA entende o caimento em você.
+              </p>
+              <div className="mt-5 grid grid-cols-3 gap-2" role="group" aria-label="Fotos da peça">
+                {gallery.map((url, index) => {
+                  const selected = selectedImages.includes(url);
+                  return (
+                    <button
+                      key={url}
+                      type="button"
+                      aria-pressed={selected}
+                      aria-label={`Foto ${index + 1} da peça`}
+                      onClick={() => toggleImage(url)}
+                      className={`relative aspect-[3/4] overflow-hidden border-2 bg-muted transition-all ${selected ? "border-foreground" : "border-transparent opacity-60 hover:opacity-90"}`}
+                    >
+                      <img src={url} alt="" className="size-full object-cover" />
+                      {selected ? (
+                        <span className="absolute right-1.5 top-1.5 grid size-5 place-items-center rounded-full bg-foreground text-background">
+                          <Check className="size-3" />
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
               </div>
-              {productImages.length > 1 ? (
-                <fieldset className="mt-6">
-                  <legend className="text-sm font-medium">Fotos do produto (até 3)</legend>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">A primeira foto selecionada será usada como referência da simulação.</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {productImages.map((imageUrl, index) => {
-                      const selected = selectedImages.includes(imageUrl);
-                      return (
-                        <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleProductImage(imageUrl)} className={`relative size-16 overflow-hidden border-2 ${selected ? "border-foreground" : "border-transparent"}`}>
-                          <img src={imageUrl} alt={`Foto ${index + 1} de ${product.name}`} className="size-full object-cover" />
-                          {selected ? <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-foreground text-[10px] text-background">✓</span> : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </fieldset>
-              ) : null}
-              {simulatesFit ? (
-                <>
-                  <div className="mt-7 space-y-6">
-                    <SizeOptions label="Tamanho para experimentar" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
-                    <SizeOptions label="Tamanho que você costuma usar" sizes={product.sizes} value={usualSize} onChange={setUsualSize} allowUnknown />
-                  </div>
-                  <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">{fitLabel(sizeOffset)}</p>
-                  <p className="mt-3 text-xs text-muted-foreground">O caimento é uma simulação aproximada.</p>
-                </>
-              ) : (
-                <div className="mt-7 space-y-5">
-                  <SizeOptions label="Numeração do calçado" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
-                  <p className="text-xs text-muted-foreground">Você pode selecionar até três fotos do produto.</p>
-                </div>
-              )}
+              <p className="mt-4 text-xs text-muted-foreground" role="status">
+                {selectedImages.length} de {MAX_REFERENCE_IMAGES} fotos selecionadas
+              </p>
             </div>
-            <div className="shrink-0 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>Continuar</Button>
+            <div className="shrink-0 border-t border-border p-4">
+              <Button
+                type="button"
+                className={`w-full ${footerButton}`}
+                onClick={() => (simulatesFit ? setPhase("sizes") : setPhase("tutorial"))}
+              >
+                Continuar
+              </Button>
             </div>
           </div>
-        ) : phase === "profile" ? (
+        ) : phase === "sizes" ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
-              <h3 className="text-lg font-medium sm:text-xl">Quer uma recomendação de tamanho?</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">Informe sua altura e seu peso. Durante a prova, a câmera também mede a largura dos ombros para refinar a sugestão.</p>
-              <div className="mt-6 grid grid-cols-2 gap-3">
-                <label className="text-sm font-medium">Altura (cm)<Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="175" value={heightInput} onChange={(event) => setHeightInput(event.target.value)} /></label>
-                <label className="text-sm font-medium">Peso (kg)<Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="72" value={weightInput} onChange={(event) => setWeightInput(event.target.value)} /></label>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <div className="flex gap-4">
+                <img
+                  src={selectedImages[0] ?? product.imageUrl}
+                  alt=""
+                  className="h-28 w-21 shrink-0 bg-muted object-cover"
+                />
+                <div>
+                  <h3 className="text-xl font-medium">Escolha os tamanhos</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais
+                    justa ou mais folgada em você.
+                  </p>
+                </div>
               </div>
-              <p className="mt-6 flex gap-2 text-xs leading-5 text-muted-foreground"><Ruler className="size-4 shrink-0" />A medição acontece no seu aparelho: a imagem não é enviada para isso. O resultado é uma estimativa, não uma medida exata.</p>
+              <div className="mt-7 space-y-6">
+                <SizeOptions
+                  label="Tamanho para experimentar"
+                  sizes={product.sizes}
+                  value={trySize}
+                  onChange={(size) => size && setTrySize(size)}
+                />
+                <SizeOptions
+                  label="Tamanho que você costuma usar"
+                  sizes={product.sizes}
+                  value={usualSize}
+                  onChange={setUsualSize}
+                  allowUnknown
+                />
+              </div>
+              <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
+                {fitLabel(sizeOffset)}
+              </p>
+              <p className="mt-3 text-xs text-muted-foreground">
+                O caimento é uma simulação aproximada: a IA não mede o seu corpo.
+              </p>
             </div>
-            <div className="flex shrink-0 gap-2 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <Button type="button" variant="ghost" className="h-12 rounded-none px-5" onClick={() => setPhase("tutorial")}>Agora não</Button>
-              <Button type="button" className="h-12 flex-1 rounded-none" disabled={!isValidProfile(draftProfile)} onClick={confirmProfile}>Continuar</Button>
+            <div className="shrink-0 border-t border-border p-4">
+              <Button type="button" className={`w-full ${footerButton}`} onClick={confirmSizes}>
+                Continuar
+              </Button>
             </div>
           </div>
         ) : phase === "tutorial" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-              <div className="mx-auto aspect-[10/7] w-full max-w-xs bg-muted p-4 text-foreground">{step.illustration}</div>
-              <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">Passo {tutorialStep + 1} de {steps.length}</p>
+              <div className="relative mx-auto aspect-[10/7] w-full max-w-xs overflow-hidden bg-foreground p-5 text-background shadow-lg">
+                <div className="pointer-events-none absolute inset-0 opacity-20 [background:radial-gradient(circle_at_30%_20%,var(--color-background),transparent_60%)]" />
+                {step.illustration}
+              </div>
+              <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">
+                Passo {tutorialStep + 1} de {steps.length}
+              </p>
               <h3 className="mt-2 text-xl font-medium">{step.title}</h3>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.text}</p>
-              <div className="mt-6 flex gap-1.5" aria-hidden="true">{steps.map((item, index) => <span key={item.title} className={`h-1 flex-1 ${index <= tutorialStep ? "bg-foreground" : "bg-border"}`} />)}</div>
-              {isLastStep ? <p className="mt-6 flex gap-2 text-xs text-muted-foreground"><Camera className="size-4 shrink-0" />A câmera abre só para você se posicionar. Nada é transmitido até você tocar em Começar.</p> : null}
+              <div className="mt-6 flex gap-1.5" role="tablist" aria-label="Passos do tutorial">
+                {steps.map((item, index) => (
+                  <button
+                    key={item.title}
+                    type="button"
+                    role="tab"
+                    aria-selected={index === tutorialStep}
+                    aria-label={`Passo ${index + 1}: ${item.title}`}
+                    onClick={() => setTutorialStep(index)}
+                    className={`h-1.5 flex-1 rounded-full transition-colors ${index <= tutorialStep ? "bg-foreground" : "bg-border hover:bg-muted-foreground"}`}
+                  />
+                ))}
+              </div>
+              {isLastStep ? (
+                <p className="mt-6 flex gap-2 text-xs text-muted-foreground">
+                  <Camera className="size-4 shrink-0" />A câmera abre só para você se posicionar.
+                  Nada é transmitido até você tocar em Começar.
+                </p>
+              ) : null}
             </div>
-            <div className="flex shrink-0 gap-2 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              {tutorialStep > 0 ? <Button type="button" variant="outline" className="h-12 rounded-none px-5" onClick={() => setTutorialStep(tutorialStep - 1)}>Voltar</Button> : <Button type="button" variant="ghost" className="h-12 rounded-none px-5" onClick={() => setPhase("sizes")}>Voltar</Button>}
-              <Button type="button" className="h-12 flex-1 rounded-none" onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}>{isLastStep ? <><Camera />Abrir câmera</> : "Próximo"}</Button>
+            <div className="flex shrink-0 gap-2 border-t border-border p-4">
+              {tutorialStep > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={`px-4 sm:px-5 ${footerButton}`}
+                  onClick={() => setTutorialStep(tutorialStep - 1)}
+                >
+                  Voltar
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={`px-4 sm:px-5 ${footerButton}`}
+                  onClick={() => void openCamera()}
+                >
+                  Pular
+                </Button>
+              )}
+              <Button
+                type="button"
+                className={`flex-1 ${footerButton}`}
+                onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}
+              >
+                {isLastStep ? (
+                  <>
+                    <Camera />
+                    Abrir câmera
+                  </>
+                ) : (
+                  "Próximo"
+                )}
+              </Button>
             </div>
           </div>
         ) : (
@@ -834,7 +752,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                     playsInline
                     autoPlay
                     onPlaying={goLive}
-                    className={`absolute inset-0 size-full object-cover transition-opacity duration-500 ${phase === "live" ? "opacity-100" : "opacity-0"}`}
+                    className={`absolute inset-0 size-full scale-x-[-1] object-cover transition-opacity duration-500 ${phase === "live" ? "opacity-100" : "opacity-0"}`}
                   />
                 ) : null}
 
@@ -891,7 +809,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                 {phase === "connecting" ? (
                   <StageMessage>
                     <LoaderCircle className="mx-auto size-8 animate-spin" />
-                    <p className="mt-3 font-medium">{queueText || `Vestindo ${product.name}…`}</p>
+                    <p className="mt-3 font-medium">Vestindo {product.name}…</p>
                     <p className="mt-1 text-sm opacity-80">
                       Fique parado na posição por alguns segundos.
                     </p>
@@ -906,16 +824,6 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                         Gravando · 0:{String(Math.max(secondsLeft, 0)).padStart(2, "0")}
                       </span>
                     </div>
-                    {watermark ? (
-                      <div className="absolute bottom-4 right-3 flex items-center gap-1.5 bg-white/90 px-2 py-1.5">
-                        <img src={watermark.logoUrl} alt="" className="h-4 w-auto" />
-                        {watermark.label ? (
-                          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-black">
-                            {watermark.label}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-white/30">
                       <div
                         className="h-full bg-destructive transition-[width] duration-1000 ease-linear"
@@ -937,21 +845,19 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
               </div>
             </div>
 
-            <div className="shrink-0 border-t border-border p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="shrink-0 border-t border-border p-4">
               {phase === "camera" && cameraStatus === "ready" ? (
                 <>
-                  {sizeChart ? (
+                  {simulatesFit ? (
                     <p className="mb-2 text-center text-xs">
-                      {profile
-                        ? `${profile.heightCm} cm · ${profile.weightKg} kg`
-                        : "Recomendação de tamanho"}{" "}
-                      ·{" "}
+                      Tamanho {trySize}
+                      {usualSize ? ` · você usa ${usualSize}` : ""} ·{" "}
                       <button
                         type="button"
                         className="underline underline-offset-2"
-                        onClick={editProfile}
+                        onClick={showSizes}
                       >
-                        {profile ? "Alterar" : "Informar altura e peso"}
+                        Alterar
                       </button>
                     </p>
                   ) : null}
@@ -963,14 +869,14 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-12 rounded-none px-5"
+                      className={`px-4 sm:px-5 ${footerButton}`}
                       onClick={showTutorial}
                     >
                       Tutorial
                     </Button>
                     <Button
                       type="button"
-                      className="h-12 flex-1 rounded-none"
+                      className={`flex-1 ${footerButton}`}
                       onClick={startCountdown}
                     >
                       <Sparkles />
@@ -980,7 +886,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                 </>
               ) : null}
               {phase === "camera" && cameraStatus === "requesting" ? (
-                <Button type="button" className="h-12 w-full rounded-none" disabled>
+                <Button type="button" className={`w-full ${footerButton}`} disabled>
                   Abrindo câmera…
                 </Button>
               ) : null}
@@ -991,14 +897,14 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-12 rounded-none px-5"
+                    className={`px-4 sm:px-5 ${footerButton}`}
                     onClick={showTutorial}
                   >
                     Tutorial
                   </Button>
                   <Button
                     type="button"
-                    className="h-12 flex-1 rounded-none"
+                    className={`flex-1 ${footerButton}`}
                     onClick={() => void openCamera()}
                   >
                     <RefreshCcw />
@@ -1010,14 +916,14 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-12 w-full rounded-none"
+                  className={`w-full ${footerButton}`}
                   onClick={backToCamera}
                 >
                   Cancelar
                 </Button>
               ) : null}
               {phase === "live" ? (
-                <Button type="button" className="h-12 w-full rounded-none" onClick={finish}>
+                <Button type="button" className={`w-full ${footerButton}`} onClick={finish}>
                   <CircleStop />
                   Encerrar
                 </Button>
@@ -1029,37 +935,23 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                       {error}
                     </p>
                   ) : null}
-                  {recommendation ? (
-                    <div className="mb-3 border border-border p-3">
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                        Tamanho recomendado
-                      </p>
-                      <p className="mt-1 text-2xl font-medium leading-none">
-                        {recommendation.size}
-                      </p>
-                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        {recommendationReason(recommendation)} É uma estimativa, não uma medida
-                        exata.
-                      </p>
-                    </div>
+                  {shareFeedback ? (
+                    <p role="status" className="mb-3 text-center text-xs text-muted-foreground">
+                      {shareFeedback}
+                    </p>
                   ) : null}
                   <div className="flex flex-col gap-2">
                     {result ? (
-                      <Button
-                        type="button"
-                        className="h-12 w-full rounded-none px-3 text-xs sm:text-sm"
-                        onClick={() => void saveVideo()}
-                      >
-                        <Download />
-                        <span className="sm:hidden">Compartilhar / salvar vídeo</span>
-                        <span className="hidden sm:inline">Baixar ou compartilhar vídeo</span>
+                      <Button type="button" className={`w-full ${footerButton}`} onClick={() => void shareResult()}>
+                        {canShareFiles() ? <Share2 /> : <Download />}
+                        {canShareFiles() ? "Compartilhar ou salvar vídeo" : "Baixar vídeo"}
                       </Button>
                     ) : null}
                     <div className="flex gap-2">
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-12 flex-1 rounded-none"
+                        className={`flex-1 ${footerButton}`}
                         onClick={tryAgain}
                       >
                         <RefreshCcw />
@@ -1068,7 +960,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-12 rounded-none px-5"
+                        className={`px-4 sm:px-5 ${footerButton}`}
                         onClick={() => onOpenChange(false)}
                       >
                         Concluir
