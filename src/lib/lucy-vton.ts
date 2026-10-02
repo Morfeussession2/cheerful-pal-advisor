@@ -33,8 +33,8 @@ export interface LucyTryOnOptions {
   localStream: MediaStream;
   /** Instrução para o modelo (veja buildTryOnPrompt). */
   prompt: string;
-  /** URL pública (ou data URI) da foto da peça. */
-  referenceImageUrl: string;
+  /** URLs públicas (ou data URIs) das fotos da peça; a primeira é a principal. */
+  referenceImageUrls: readonly string[];
   /** Primeiro frame da câmera como data URI, usado para iniciar a geração. */
   firstFrame?: string | undefined;
   onRemoteStream: (stream: MediaStream) => void;

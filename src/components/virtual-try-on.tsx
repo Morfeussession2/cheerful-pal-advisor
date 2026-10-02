@@ -1,4 +1,4 @@
-import { Camera, CircleStop, Download, LoaderCircle, RefreshCcw, Sparkles } from "lucide-react";
+import { Camera, Check, CircleStop, Download, LoaderCircle, RefreshCcw, Share2, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -21,8 +21,10 @@ import { buildTryOnPrompt, type GarmentKind } from "@/lib/try-on-prompt";
 
 export interface TryOnProduct {
   name: string;
-  /** Foto da peça, usada como referência pelo modelo. */
+  /** Foto principal da peça, usada como referência pelo modelo. */
   imageUrl: string;
+  /** Fotos extras da peça (ângulos diferentes); a pessoa escolhe até 3. */
+  images?: readonly string[] | undefined;
   garment: GarmentKind;
   /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
   description?: string | undefined;
@@ -39,13 +41,22 @@ interface VirtualTryOnProps {
 }
 
 type Phase =
-  "sizes" | "tutorial" | "camera" | "countdown" | "connecting" | "live" | "result" | "error";
+  | "photos"
+  | "sizes"
+  | "tutorial"
+  | "camera"
+  | "countdown"
+  | "connecting"
+  | "live"
+  | "result"
+  | "error";
 type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 
 // Tempo para a pessoa se afastar do celular depois de tocar em "Começar".
 const POSITIONING_SECONDS = 5;
 // Duração máxima da gravação (e da sessão realtime, que a fal.ai cobra por segundo).
 const MAX_SESSION_SECONDS = 5;
+const MAX_REFERENCE_IMAGES = 3;
 const RECORDER_TYPES = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
 const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
 
@@ -76,6 +87,11 @@ function fitLabel(sizeOffset: number | undefined) {
   return "Bem larga: dois ou mais tamanhos acima do seu.";
 }
 
+// iOS/Safari não baixa blobs via <a download>; o caminho é a folha de compartilhamento.
+function canShareFiles() {
+  return typeof navigator !== "undefined" && typeof navigator.share === "function";
+}
+
 function SizeOptions({
   label,
   sizes,
@@ -90,7 +106,7 @@ function SizeOptions({
   allowUnknown?: boolean;
 }) {
   const chip = (selected: boolean) =>
-    `h-11 min-w-11 rounded-full border px-3 text-xs ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background"}`;
+    `h-11 min-w-11 rounded-full border px-3 text-xs transition-colors ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background hover:border-foreground"}`;
   return (
     <fieldset>
       <legend className="text-sm font-medium">{label}</legend>
@@ -178,10 +194,15 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const steps = tutorialSteps(framing);
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
   const simulatesFit = product.garment !== "shoes";
-  const firstPhase: Phase = simulatesFit ? "sizes" : "tutorial";
+  const gallery = [product.imageUrl, ...(product.images ?? [])].filter(
+    (url, index, all) => all.indexOf(url) === index,
+  );
+  const hasGallery = gallery.length > 1;
+  const firstPhase: Phase = hasGallery ? "photos" : simulatesFit ? "sizes" : "tutorial";
 
   const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
+  const [selectedImages, setSelectedImages] = useState<string[]>([product.imageUrl]);
   const [trySize, setTrySize] = useState(product.size);
   const [usualSize, setUsualSize] = useState<string | null>(null);
   // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
@@ -190,8 +211,9 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const [countdown, setCountdown] = useState(POSITIONING_SECONDS);
   const [secondsLeft, setSecondsLeft] = useState(MAX_SESSION_SECONDS);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [result, setResult] = useState<{ url: string; extension: string } | null>(null);
+  const [result, setResult] = useState<{ url: string; blob: Blob; extension: string } | null>(null);
   const [resultPending, setResultPending] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState("");
   const [error, setError] = useState("");
 
   const openRef = useRef(open);
@@ -230,6 +252,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
       return null;
     });
     setResultPending(false);
+    setShareFeedback("");
   };
 
   const teardown = useCallback(() => {
@@ -248,6 +271,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     if (open) {
       setTrySize(product.size);
       setUsualSize(readUsualSize());
+      setSelectedImages([product.imageUrl]);
       return;
     }
     teardown();
@@ -256,13 +280,14 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
       return null;
     });
     setResultPending(false);
+    setShareFeedback("");
     setPhase(firstPhase);
     setTutorialStep(0);
     setSkipTutorial(false);
     setCameraStatus("idle");
     setRemoteStream(null);
     setError("");
-  }, [open, teardown, product.size, firstPhase]);
+  }, [open, teardown, product.size, product.imageUrl, firstPhase]);
 
   useEffect(() => teardown, [teardown]);
 
@@ -294,6 +319,17 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   });
+
+  const toggleImage = (url: string) => {
+    setSelectedImages((current) => {
+      if (current.includes(url)) {
+        // Sempre mantém ao menos uma referência.
+        return current.length > 1 ? current.filter((item) => item !== url) : current;
+      }
+      if (current.length >= MAX_REFERENCE_IMAGES) return current;
+      return [...current, url];
+    });
+  };
 
   const openCamera = async () => {
     setPhase("camera");
@@ -380,7 +416,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     sessionRef.current = startLucyTryOn({
       localStream: stream,
       prompt,
-      referenceImageUrl: product.imageUrl,
+      referenceImageUrls: selectedImages,
       firstFrame: captureFrame(localVideoRef.current),
       onRemoteStream: setRemoteStream,
       onError: (sessionError) => {
@@ -419,6 +455,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
       const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
       setResult({
         url: URL.createObjectURL(blob),
+        blob,
         extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm",
       });
     };
@@ -465,6 +502,30 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     void openCamera();
   };
 
+  // No iOS, "baixar" um blob não funciona: abrimos a folha de compartilhamento,
+  // que permite salvar o vídeo no app Fotos/Arquivos.
+  const shareResult = async () => {
+    if (!result) return;
+    setShareFeedback("");
+    const file = new File([result.blob], `provador-reserva.${result.extension}`, {
+      type: result.blob.type,
+    });
+    if (canShareFiles() && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "Meu provador Reserva" });
+        return;
+      } catch (shareError) {
+        if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+      }
+    }
+    // Fallback: download tradicional (desktop e Android sem share de arquivos).
+    const anchor = document.createElement("a");
+    anchor.href = result.url;
+    anchor.download = `provador-reserva.${result.extension}`;
+    anchor.click();
+    setShareFeedback("Se o download não iniciar, toque e segure o vídeo e escolha Salvar.");
+  };
+
   const tryIndex = product.sizes.indexOf(trySize);
   const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
   const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
@@ -476,21 +537,69 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     framing === "upper"
       ? "Encaixe cabeça, ombros e tronco na silhueta"
       : "Encaixe o corpo inteiro na silhueta";
+  const footerButton = "h-12 rounded-none text-sm sm:text-xs md:text-sm";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(880px,94dvh)] sm:max-w-md sm:rounded-none sm:border">
         <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
-          <DialogTitle className="text-lg font-medium">Experimentar virtualmente</DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-lg font-medium">
+            <Sparkles className="size-4" />
+            Experimentar virtualmente
+          </DialogTitle>
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        {phase === "sizes" ? (
+        {phase === "photos" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+              <h3 className="text-xl font-medium">Escolha as fotos da peça</h3>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Selecione até {MAX_REFERENCE_IMAGES} ângulos da peça. Quanto mais referências, melhor
+                a IA entende o caimento em você.
+              </p>
+              <div className="mt-5 grid grid-cols-3 gap-2" role="group" aria-label="Fotos da peça">
+                {gallery.map((url, index) => {
+                  const selected = selectedImages.includes(url);
+                  return (
+                    <button
+                      key={url}
+                      type="button"
+                      aria-pressed={selected}
+                      aria-label={`Foto ${index + 1} da peça`}
+                      onClick={() => toggleImage(url)}
+                      className={`relative aspect-[3/4] overflow-hidden border-2 bg-muted transition-all ${selected ? "border-foreground" : "border-transparent opacity-60 hover:opacity-90"}`}
+                    >
+                      <img src={url} alt="" className="size-full object-cover" />
+                      {selected ? (
+                        <span className="absolute right-1.5 top-1.5 grid size-5 place-items-center rounded-full bg-foreground text-background">
+                          <Check className="size-3" />
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-4 text-xs text-muted-foreground" role="status">
+                {selectedImages.length} de {MAX_REFERENCE_IMAGES} fotos selecionadas
+              </p>
+            </div>
+            <div className="shrink-0 border-t border-border p-4">
+              <Button
+                type="button"
+                className={`w-full ${footerButton}`}
+                onClick={() => (simulatesFit ? setPhase("sizes") : setPhase("tutorial"))}
+              >
+                Continuar
+              </Button>
+            </div>
+          </div>
+        ) : phase === "sizes" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
               <div className="flex gap-4">
                 <img
-                  src={product.imageUrl}
+                  src={selectedImages[0] ?? product.imageUrl}
                   alt=""
                   className="h-28 w-21 shrink-0 bg-muted object-cover"
                 />
@@ -525,7 +634,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
               </p>
             </div>
             <div className="shrink-0 border-t border-border p-4">
-              <Button type="button" className="h-12 w-full rounded-none" onClick={confirmSizes}>
+              <Button type="button" className={`w-full ${footerButton}`} onClick={confirmSizes}>
                 Continuar
               </Button>
             </div>
@@ -533,7 +642,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
         ) : phase === "tutorial" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-              <div className="mx-auto aspect-[10/7] w-full max-w-xs bg-muted p-4 text-foreground">
+              <div className="relative mx-auto aspect-[10/7] w-full max-w-xs overflow-hidden bg-foreground p-5 text-background shadow-lg">
+                <div className="pointer-events-none absolute inset-0 opacity-20 [background:radial-gradient(circle_at_30%_20%,var(--color-background),transparent_60%)]" />
                 {step.illustration}
               </div>
               <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">
@@ -541,11 +651,16 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
               </p>
               <h3 className="mt-2 text-xl font-medium">{step.title}</h3>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.text}</p>
-              <div className="mt-6 flex gap-1.5" aria-hidden="true">
+              <div className="mt-6 flex gap-1.5" role="tablist" aria-label="Passos do tutorial">
                 {steps.map((item, index) => (
-                  <span
+                  <button
                     key={item.title}
-                    className={`h-1 flex-1 ${index <= tutorialStep ? "bg-foreground" : "bg-border"}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={index === tutorialStep}
+                    aria-label={`Passo ${index + 1}: ${item.title}`}
+                    onClick={() => setTutorialStep(index)}
+                    className={`h-1.5 flex-1 rounded-full transition-colors ${index <= tutorialStep ? "bg-foreground" : "bg-border hover:bg-muted-foreground"}`}
                   />
                 ))}
               </div>
@@ -561,7 +676,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-12 rounded-none px-5"
+                  className={`px-4 sm:px-5 ${footerButton}`}
                   onClick={() => setTutorialStep(tutorialStep - 1)}
                 >
                   Voltar
@@ -570,7 +685,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 <Button
                   type="button"
                   variant="ghost"
-                  className="h-12 rounded-none px-5"
+                  className={`px-4 sm:px-5 ${footerButton}`}
                   onClick={() => void openCamera()}
                 >
                   Pular
@@ -578,7 +693,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
               )}
               <Button
                 type="button"
-                className="h-12 flex-1 rounded-none"
+                className={`flex-1 ${footerButton}`}
                 onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}
               >
                 {isLastStep ? (
@@ -754,14 +869,14 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-12 rounded-none px-5"
+                      className={`px-4 sm:px-5 ${footerButton}`}
                       onClick={showTutorial}
                     >
                       Tutorial
                     </Button>
                     <Button
                       type="button"
-                      className="h-12 flex-1 rounded-none"
+                      className={`flex-1 ${footerButton}`}
                       onClick={startCountdown}
                     >
                       <Sparkles />
@@ -771,7 +886,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 </>
               ) : null}
               {phase === "camera" && cameraStatus === "requesting" ? (
-                <Button type="button" className="h-12 w-full rounded-none" disabled>
+                <Button type="button" className={`w-full ${footerButton}`} disabled>
                   Abrindo câmera…
                 </Button>
               ) : null}
@@ -782,14 +897,14 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-12 rounded-none px-5"
+                    className={`px-4 sm:px-5 ${footerButton}`}
                     onClick={showTutorial}
                   >
                     Tutorial
                   </Button>
                   <Button
                     type="button"
-                    className="h-12 flex-1 rounded-none"
+                    className={`flex-1 ${footerButton}`}
                     onClick={() => void openCamera()}
                   >
                     <RefreshCcw />
@@ -801,14 +916,14 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-12 w-full rounded-none"
+                  className={`w-full ${footerButton}`}
                   onClick={backToCamera}
                 >
                   Cancelar
                 </Button>
               ) : null}
               {phase === "live" ? (
-                <Button type="button" className="h-12 w-full rounded-none" onClick={finish}>
+                <Button type="button" className={`w-full ${footerButton}`} onClick={finish}>
                   <CircleStop />
                   Encerrar
                 </Button>
@@ -820,20 +935,23 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                       {error}
                     </p>
                   ) : null}
+                  {shareFeedback ? (
+                    <p role="status" className="mb-3 text-center text-xs text-muted-foreground">
+                      {shareFeedback}
+                    </p>
+                  ) : null}
                   <div className="flex flex-col gap-2">
                     {result ? (
-                      <Button asChild className="h-12 rounded-none">
-                        <a href={result.url} download={`provador-reserva.${result.extension}`}>
-                          <Download />
-                          Baixar vídeo
-                        </a>
+                      <Button type="button" className={`w-full ${footerButton}`} onClick={() => void shareResult()}>
+                        {canShareFiles() ? <Share2 /> : <Download />}
+                        {canShareFiles() ? "Compartilhar ou salvar vídeo" : "Baixar vídeo"}
                       </Button>
                     ) : null}
                     <div className="flex gap-2">
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-12 flex-1 rounded-none"
+                        className={`flex-1 ${footerButton}`}
                         onClick={tryAgain}
                       >
                         <RefreshCcw />
@@ -842,7 +960,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-12 rounded-none px-5"
+                        className={`px-4 sm:px-5 ${footerButton}`}
                         onClick={() => onOpenChange(false)}
                       >
                         Concluir
