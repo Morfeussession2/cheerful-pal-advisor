@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import {
   Camera,
   ChevronRight,
@@ -6,12 +5,9 @@ import {
   Download,
   LoaderCircle,
   RefreshCcw,
-  Ruler,
+  Share2,
   Sparkles,
 } from "lucide-react";
-=======
-import { Camera, Check, CircleStop, Download, LoaderCircle, RefreshCcw, Share2, Sparkles } from "lucide-react";
->>>>>>> 94fbe43403f0706a755639a780982033bf51d7cb
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -36,8 +32,8 @@ export interface TryOnProduct {
   name: string;
   /** Foto principal da peça, usada como referência pelo modelo. */
   imageUrl: string;
-  /** Fotos extras da peça (ângulos diferentes); a pessoa escolhe até 3. */
-  images?: readonly string[] | undefined;
+  /** Fotos extras da peça; a pessoa escolhe uma referência por vez. */
+  imageUrls?: readonly string[] | undefined;
   garment: GarmentKind;
   /** Descrição em inglês da peça (cor, tecido, modelagem, detalhes) para o prompt. */
   description?: string | undefined;
@@ -69,7 +65,6 @@ type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 const POSITIONING_SECONDS = 5;
 // Duração máxima da gravação (e da sessão realtime, que a fal.ai cobra por segundo).
 const MAX_SESSION_SECONDS = 5;
-const MAX_REFERENCE_IMAGES = 3;
 const RECORDER_TYPES = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
 const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
 
@@ -119,11 +114,7 @@ function SizeOptions({
   allowUnknown?: boolean;
 }) {
   const chip = (selected: boolean) =>
-<<<<<<< HEAD
     `h-12 min-w-12 rounded-full border px-3 text-xs transition duration-200 hover:-translate-y-0.5 hover:border-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${selected ? "border-foreground bg-foreground text-background shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-border bg-background"}`;
-=======
-    `h-11 min-w-11 rounded-full border px-3 text-xs transition-colors ${selected ? "border-foreground bg-foreground text-background" : "border-border bg-background hover:border-foreground"}`;
->>>>>>> 94fbe43403f0706a755639a780982033bf51d7cb
   return (
     <fieldset>
       <legend className="text-sm font-medium">{label}</legend>
@@ -211,11 +202,11 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const steps = tutorialSteps(framing);
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
   const simulatesFit = product.garment !== "shoes";
-  const gallery = [product.imageUrl, ...(product.images ?? [])].filter(
+  const gallery = [product.imageUrl, ...(product.imageUrls ?? [])].filter(
     (url, index, all) => all.indexOf(url) === index,
   );
   const hasGallery = gallery.length > 1;
-  const firstPhase: Phase = hasGallery ? "photos" : simulatesFit ? "sizes" : "tutorial";
+  const firstPhase: Phase = hasGallery || simulatesFit ? "sizes" : "tutorial";
 
   const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
@@ -337,16 +328,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   });
 
-  const toggleImage = (url: string) => {
-    setSelectedImages((current) => {
-      if (current.includes(url)) {
-        // Sempre mantém ao menos uma referência.
-        return current.length > 1 ? current.filter((item) => item !== url) : current;
-      }
-      if (current.length >= MAX_REFERENCE_IMAGES) return current;
-      return [...current, url];
-    });
-  };
+  const toggleImage = (url: string) => setSelectedImages([url]);
 
   const openCamera = async () => {
     setPhase("camera");
@@ -518,8 +500,6 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     clearResult();
     closeSession();
     releaseCamera();
-    stopSampling();
-    setRecommendation(null);
     setError("");
     setTutorialStep(0);
     setPhase("sizes");
@@ -529,7 +509,6 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   // que permite salvar o vídeo no app Fotos/Arquivos.
   const shareResult = async () => {
     if (!result) return;
-<<<<<<< HEAD
     const filename = `provador-reserva.${result.extension}`;
     const shareData = { files: [new File([result.blob], filename, { type: result.blob.type })] };
 
@@ -556,30 +535,6 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     link.click();
   };
 
-  const toggleProductImage = (imageUrl: string) => {
-    setSelectedImages([imageUrl]);
-=======
-    setShareFeedback("");
-    const file = new File([result.blob], `provador-reserva.${result.extension}`, {
-      type: result.blob.type,
-    });
-    if (canShareFiles() && navigator.canShare?.({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: "Meu provador Reserva" });
-        return;
-      } catch (shareError) {
-        if (shareError instanceof DOMException && shareError.name === "AbortError") return;
-      }
-    }
-    // Fallback: download tradicional (desktop e Android sem share de arquivos).
-    const anchor = document.createElement("a");
-    anchor.href = result.url;
-    anchor.download = `provador-reserva.${result.extension}`;
-    anchor.click();
-    setShareFeedback("Se o download não iniciar, toque e segure o vídeo e escolha Salvar.");
->>>>>>> 94fbe43403f0706a755639a780982033bf51d7cb
-  };
-
   const tryIndex = product.sizes.indexOf(trySize);
   const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
   const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
@@ -595,7 +550,6 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-<<<<<<< HEAD
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(900px,94dvh)] sm:max-w-4xl sm:rounded-none sm:border">
         <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-14 text-left sm:px-8 sm:py-5">
           <div className="flex items-center justify-between gap-4">
@@ -612,7 +566,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 ["tutorial", "02", "Preparação"],
                 ["camera", "03", "Prova"],
               ] as const).map(([target, number, label], index) => {
-                const currentIndex = phase === "sizes" || phase === "profile" ? 0 : phase === "tutorial" ? 1 : 2;
+                const currentIndex = phase === "sizes" ? 0 : phase === "tutorial" ? 1 : 2;
                 const active = currentIndex === index;
                 const complete = currentIndex > index;
                 return (
@@ -651,15 +605,15 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Passo 1 · Personalize sua prova</p>
                   <h3 className="mt-2 text-xl font-medium sm:text-2xl">{simulatesFit ? "Escolha tamanho e foto" : "Escolha numeração e foto"}</h3>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">{simulatesFit ? "Selecione o tamanho e a foto da peça que quer experimentar." : "Escolha o número e a foto da peça para sua prova."}</p>
-                  {productImages.length > 1 ? (
+                  {hasGallery ? (
                     <fieldset className="mt-6">
                       <legend className="flex w-full items-end justify-between gap-3 text-sm font-medium">Foto da peça <span className="text-[10px] font-normal uppercase tracking-[0.14em] text-muted-foreground">Selecione uma</span></legend>
                       <p className="mt-1 text-xs text-muted-foreground">Escolha o ângulo que será usado na prova virtual.</p>
                       <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                        {productImages.map((imageUrl, index) => {
+                        {gallery.map((imageUrl, index) => {
                           const selected = selectedImages.includes(imageUrl);
                           return (
-                            <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Usar foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleProductImage(imageUrl)} className={`group relative size-[4.5rem] shrink-0 overflow-hidden border-2 transition duration-200 hover:-translate-y-0.5 active:scale-95 ${selected ? "border-foreground shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-transparent opacity-70 hover:opacity-100"}`}>
+                            <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Usar foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleImage(imageUrl)} className={`group relative size-[4.5rem] shrink-0 overflow-hidden border-2 transition duration-200 hover:-translate-y-0.5 active:scale-95 ${selected ? "border-foreground shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-transparent opacity-70 hover:opacity-100"}`}>
                               <img src={imageUrl} alt={`Foto ${index + 1} de ${product.name}`} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
                               {selected ? <span className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-foreground text-xs text-background">✓</span> : null}
                             </button>
@@ -695,116 +649,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
               </div>
             </div>
           </div>
-        ) : phase === "profile" ? (
-          <div key={phase} className="try-on-enter flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6">
-              <h3 className="text-lg font-medium sm:text-xl">Quer uma recomendação de tamanho?</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">Informe sua altura e seu peso. Durante a prova, a câmera também mede a largura dos ombros para refinar a sugestão.</p>
-              <div className="mt-6 grid grid-cols-2 gap-3">
-                <label className="text-sm font-medium">Altura (cm)<Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="175" value={heightInput} onChange={(event) => setHeightInput(event.target.value)} /></label>
-                <label className="text-sm font-medium">Peso (kg)<Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="72" value={weightInput} onChange={(event) => setWeightInput(event.target.value)} /></label>
-=======
-      <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(880px,94dvh)] sm:max-w-md sm:rounded-none sm:border">
-        <DialogHeader className="shrink-0 border-b border-border px-5 py-4 pr-14 text-left">
-          <DialogTitle className="flex items-center gap-2 text-lg font-medium">
-            <Sparkles className="size-4" />
-            Experimentar virtualmente
-          </DialogTitle>
-          <DialogDescription className="truncate">{product.name}</DialogDescription>
-        </DialogHeader>
-
-        {phase === "photos" ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-              <h3 className="text-xl font-medium">Escolha as fotos da peça</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Selecione até {MAX_REFERENCE_IMAGES} ângulos da peça. Quanto mais referências, melhor
-                a IA entende o caimento em você.
-              </p>
-              <div className="mt-5 grid grid-cols-3 gap-2" role="group" aria-label="Fotos da peça">
-                {gallery.map((url, index) => {
-                  const selected = selectedImages.includes(url);
-                  return (
-                    <button
-                      key={url}
-                      type="button"
-                      aria-pressed={selected}
-                      aria-label={`Foto ${index + 1} da peça`}
-                      onClick={() => toggleImage(url)}
-                      className={`relative aspect-[3/4] overflow-hidden border-2 bg-muted transition-all ${selected ? "border-foreground" : "border-transparent opacity-60 hover:opacity-90"}`}
-                    >
-                      <img src={url} alt="" className="size-full object-cover" />
-                      {selected ? (
-                        <span className="absolute right-1.5 top-1.5 grid size-5 place-items-center rounded-full bg-foreground text-background">
-                          <Check className="size-3" />
-                        </span>
-                      ) : null}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="mt-4 text-xs text-muted-foreground" role="status">
-                {selectedImages.length} de {MAX_REFERENCE_IMAGES} fotos selecionadas
-              </p>
-            </div>
-            <div className="shrink-0 border-t border-border p-4">
-              <Button
-                type="button"
-                className={`w-full ${footerButton}`}
-                onClick={() => (simulatesFit ? setPhase("sizes") : setPhase("tutorial"))}
-              >
-                Continuar
-              </Button>
-            </div>
-          </div>
-        ) : phase === "sizes" ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-              <div className="flex gap-4">
-                <img
-                  src={selectedImages[0] ?? product.imageUrl}
-                  alt=""
-                  className="h-28 w-21 shrink-0 bg-muted object-cover"
-                />
-                <div>
-                  <h3 className="text-xl font-medium">Escolha os tamanhos</h3>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    Com o tamanho que você costuma usar, a simulação mostra se a peça fica mais
-                    justa ou mais folgada em você.
-                  </p>
-                </div>
->>>>>>> 94fbe43403f0706a755639a780982033bf51d7cb
-              </div>
-              <div className="mt-7 space-y-6">
-                <SizeOptions
-                  label="Tamanho para experimentar"
-                  sizes={product.sizes}
-                  value={trySize}
-                  onChange={(size) => size && setTrySize(size)}
-                />
-                <SizeOptions
-                  label="Tamanho que você costuma usar"
-                  sizes={product.sizes}
-                  value={usualSize}
-                  onChange={setUsualSize}
-                  allowUnknown
-                />
-              </div>
-              <p className="mt-6 border-l-2 border-foreground pl-3 text-sm">
-                {fitLabel(sizeOffset)}
-              </p>
-              <p className="mt-3 text-xs text-muted-foreground">
-                O caimento é uma simulação aproximada: a IA não mede o seu corpo.
-              </p>
-            </div>
-            <div className="shrink-0 border-t border-border p-4">
-              <Button type="button" className={`w-full ${footerButton}`} onClick={confirmSizes}>
-                Continuar
-              </Button>
-            </div>
-          </div>
         ) : phase === "tutorial" ? (
-<<<<<<< HEAD
           <div key={phase} className="try-on-enter flex min-h-0 flex-1 flex-col">
             <div className="grid min-h-0 flex-1 gap-5 overflow-y-auto px-4 py-5 sm:grid-cols-[1.1fr_0.9fr] sm:items-center sm:gap-10 sm:px-8 sm:py-8">
               <div className="relative mx-auto aspect-[2/3] w-full max-w-[433px] overflow-hidden border border-border bg-[#f4f2ed] text-foreground">
@@ -838,73 +683,6 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
             <div className="flex shrink-0 gap-2 border-t border-border bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-8">
               {tutorialStep > 0 ? <Button type="button" variant="outline" className="h-12 rounded-none px-5" onClick={() => setTutorialStep(tutorialStep - 1)}>Voltar</Button> : <Button type="button" variant="ghost" className="h-12 rounded-none px-5" onClick={() => setPhase("sizes")}>Voltar</Button>}
               <Button type="button" className="h-12 flex-1 rounded-none sm:ml-auto sm:max-w-xs" onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}>{isLastStep ? <><Camera />Abrir câmera</> : <>Próxima dica <ChevronRight className="size-4" /></>}</Button>
-=======
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-              <div className="relative mx-auto aspect-[10/7] w-full max-w-xs overflow-hidden bg-foreground p-5 text-background shadow-lg">
-                <div className="pointer-events-none absolute inset-0 opacity-20 [background:radial-gradient(circle_at_30%_20%,var(--color-background),transparent_60%)]" />
-                {step.illustration}
-              </div>
-              <p className="mt-6 text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                Passo {tutorialStep + 1} de {steps.length}
-              </p>
-              <h3 className="mt-2 text-xl font-medium">{step.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">{step.text}</p>
-              <div className="mt-6 flex gap-1.5" role="tablist" aria-label="Passos do tutorial">
-                {steps.map((item, index) => (
-                  <button
-                    key={item.title}
-                    type="button"
-                    role="tab"
-                    aria-selected={index === tutorialStep}
-                    aria-label={`Passo ${index + 1}: ${item.title}`}
-                    onClick={() => setTutorialStep(index)}
-                    className={`h-1.5 flex-1 rounded-full transition-colors ${index <= tutorialStep ? "bg-foreground" : "bg-border hover:bg-muted-foreground"}`}
-                  />
-                ))}
-              </div>
-              {isLastStep ? (
-                <p className="mt-6 flex gap-2 text-xs text-muted-foreground">
-                  <Camera className="size-4 shrink-0" />A câmera abre só para você se posicionar.
-                  Nada é transmitido até você tocar em Começar.
-                </p>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 gap-2 border-t border-border p-4">
-              {tutorialStep > 0 ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className={`px-4 sm:px-5 ${footerButton}`}
-                  onClick={() => setTutorialStep(tutorialStep - 1)}
-                >
-                  Voltar
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className={`px-4 sm:px-5 ${footerButton}`}
-                  onClick={() => void openCamera()}
-                >
-                  Pular
-                </Button>
-              )}
-              <Button
-                type="button"
-                className={`flex-1 ${footerButton}`}
-                onClick={() => (isLastStep ? void openCamera() : setTutorialStep(tutorialStep + 1))}
-              >
-                {isLastStep ? (
-                  <>
-                    <Camera />
-                    Abrir câmera
-                  </>
-                ) : (
-                  "Próximo"
-                )}
-              </Button>
->>>>>>> 94fbe43403f0706a755639a780982033bf51d7cb
             </div>
           </div>
         ) : (
