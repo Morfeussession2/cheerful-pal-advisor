@@ -29,19 +29,19 @@ function Person({ x, y }: { x: number; y: number }) {
 
 export function PhoneStandIllustration({ className }: IllustrationProps) {
   return (
-    <img src="/guiadaprova/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_07_15.png" alt="" aria-hidden="true" className={className} />
+    <img src="/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_07_15.png" alt="" aria-hidden="true" className={className} />
   );
 }
 
 export function DistanceIllustration({ className }: IllustrationProps & { framing: TryOnFraming }) {
   return (
-    <img src="/guiadaprova/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_09_08.png" alt="" aria-hidden="true" className={className} />
+    <img src="/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_09_08.png" alt="" aria-hidden="true" className={className} />
   );
 }
 
 export function LightIllustration({ className }: IllustrationProps) {
   return (
-    <img src="/guiadaprova/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_09_50.png" alt="" aria-hidden="true" className={className} />
+    <img src="/ChatGPT%20Image%202%20de%20out.%20de%202026,%2013_09_50.png" alt="" aria-hidden="true" className={className} />
   );
 }
 
