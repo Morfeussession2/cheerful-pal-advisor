@@ -14,6 +14,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   BodyGuide,
   DistanceIllustration,
+  LaptopDistanceIllustration,
+  LaptopSetupIllustration,
   LightIllustration,
   PhoneStandIllustration,
   type TryOnFraming,
@@ -26,8 +28,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
+import { fetchRealtimeQuota, startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
 import { buildTryOnPrompt, type GarmentKind } from "@/lib/try-on-prompt";
+import {
+  preloadWatermark,
+  startVideoRecording,
+  type VideoRecording,
+  type Watermark,
+} from "@/lib/video-recording";
 
 export interface TryOnProduct {
   name: string;
@@ -47,6 +55,8 @@ export interface TryOnProduct {
 interface VirtualTryOnProps {
   open: boolean;
   product: TryOnProduct;
+  /** Marca gravada no canto inferior direito do vídeo. */
+  watermark?: Watermark | undefined;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -64,9 +74,17 @@ type CameraStatus = "idle" | "requesting" | "ready" | "denied" | "unavailable";
 
 // Tempo para a pessoa se afastar do celular depois de tocar em "Começar".
 const POSITIONING_SECONDS = 5;
-// Duração máxima da gravação (e da sessão realtime, que a fal.ai cobra por segundo).
+// Duração máxima da gravação (e da sessão realtime, que a Decart cobra por segundo).
 const MAX_SESSION_SECONDS = 5;
-const RECORDER_TYPES = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
+// Espera (escondida, sob o "Vestindo…") para o WebRTC subir a banda antes de gravar:
+// os primeiros instantes da conexão vêm com a imagem bem pior.
+const WARMUP_MS = 1500;
+// Fila própria quando a conta da Decart está no limite de sessões simultâneas.
+const SLOT_POLL_MS = 2_000;
+const SLOT_WAIT_MAX_MS = 120_000;
+// A gravação passa por um canvas (marca d'água); sem banda alta o vídeo sai borrado.
+const RECORDING_BITRATE = 8_000_000;
+const BRAND = "Reserva";
 const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
 
 // O tamanho habitual é só uma conveniência deste aparelho; sem storage, a pessoa escolhe de novo.
@@ -96,13 +114,11 @@ function fitLabel(sizeOffset: number | undefined) {
   return "Bem larga: dois ou mais tamanhos acima do seu.";
 }
 
-// O Chrome do Android só compartilha tipos da sua lista e recusa parâmetros de codec
-// ("video/webm;codecs=vp9"), então o arquivo leva apenas o tipo base.
-function videoFile(chunks: Blob[], mimeType: string) {
-  const mp4 = mimeType.startsWith("video/mp4");
-  return new File(chunks, `provador-reserva.${mp4 ? "mp4" : "webm"}`, {
-    type: mp4 ? "video/mp4" : "video/webm",
-  });
+// Nome do vídeo baixado ou compartilhado: "Jaqueta Bomber Leve - Reserva.mp4".
+// Tira só os caracteres que Windows, Android e iOS não aceitam em nome de arquivo.
+function videoFileName(productName: string) {
+  const name = productName.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  return name ? `${name} - ${BRAND}` : `Provador ${BRAND}`;
 }
 
 function canShareFile(file: File) {
@@ -132,7 +148,7 @@ function SizeOptions({
   compact?: boolean;
 }) {
   const chip = (selected: boolean) =>
-    `${compact ? "h-9 min-w-9 px-2 sm:h-12 sm:min-w-12 sm:px-3" : "h-12 min-w-12 px-3"} rounded-full border text-xs transition duration-200 hover:-translate-y-0.5 hover:border-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${selected ? "border-foreground bg-foreground text-background shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-border bg-background"}`;
+    `${compact ? "h-9 min-w-9 px-2 sm:h-11 sm:min-w-11 sm:px-3" : "h-12 min-w-12 px-3"} rounded-full border text-xs transition duration-200 hover:-translate-y-0.5 hover:border-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${selected ? "border-foreground bg-foreground text-background shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-border bg-background"}`;
   return (
     <fieldset>
       <legend className="text-[10px] font-medium leading-tight sm:text-sm">{label}</legend>
@@ -163,38 +179,38 @@ function SizeOptions({
   );
 }
 
-// Para o gravador sem gerar o vídeo final.
-function discardRecorder(recorder: MediaRecorder | null) {
-  if (!recorder) return;
-  recorder.ondataavailable = null;
-  recorder.onstop = null;
-  if (recorder.state !== "inactive") recorder.stop();
+// Celular e tablet (tela de toque) usam a câmera frontal apoiada; computador usa a webcam.
+// Começa como toque: o popup só abre depois de montar, então não há troca visível.
+function useTouchDevice() {
+  const [touch, setTouch] = useState(true);
+  useEffect(() => setTouch(window.matchMedia("(pointer: coarse)").matches), []);
+  return touch;
 }
 
-function captureFrame(video: HTMLVideoElement | null) {
-  if (!video?.videoWidth) return undefined;
-  const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(video.videoWidth * scale);
-  canvas.height = Math.round(video.videoHeight * scale);
-  canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.85);
-}
-
-function tutorialSteps(framing: TryOnFraming) {
+function tutorialSteps(framing: TryOnFraming, touch: boolean) {
   return [
+    touch
+      ? {
+          title: "Apoie o celular em pé",
+          text: "Encoste o celular na vertical numa parede, estante ou pilha de livros, mais ou menos na altura da cintura, com a câmera frontal virada para você.",
+          illustration: <PhoneStandIllustration className="size-full object-contain" />,
+        }
+      : {
+          title: "Posicione o computador",
+          text: "Deixe o notebook ou a webcam numa mesa, com um espaço livre à frente. Incline a tela até a câmera mirar em você.",
+          illustration: <LaptopSetupIllustration className="size-full" />,
+        },
     {
-      title: "Apoie o celular em pé",
-      text: "Encoste o celular na vertical numa parede, estante ou pilha de livros, mais ou menos na altura da cintura, com a câmera frontal virada para você.",
-      illustration: <PhoneStandIllustration className="size-full object-contain" />,
-    },
-    {
-      title: "Afaste-se",
+      title: touch ? "Afaste-se" : "Afaste-se do computador",
       text:
         framing === "upper"
           ? "Dê um ou dois passos para trás, até aparecer da cabeça ao quadril."
           : "Dê três ou quatro passos para trás, até aparecer da cabeça aos pés.",
-      illustration: <DistanceIllustration framing={framing} className="size-full object-contain" />,
+      illustration: touch ? (
+        <DistanceIllustration framing={framing} className="size-full object-contain" />
+      ) : (
+        <LaptopDistanceIllustration className="size-full" />
+      ),
     },
     {
       title: "Capriche na luz",
@@ -215,9 +231,11 @@ function StageMessage({ children }: { children: ReactNode }) {
   );
 }
 
-export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps) {
+export function VirtualTryOn({ open, product, watermark, onOpenChange }: VirtualTryOnProps) {
   const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
-  const steps = tutorialSteps(framing);
+  const touch = useTouchDevice();
+  const steps = tutorialSteps(framing, touch);
+  const press = touch ? "tocar" : "clicar";
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
   const simulatesFit = product.garment !== "shoes";
   const gallery = [product.imageUrl, ...(product.imageUrls ?? [])].filter(
@@ -242,6 +260,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const [resultPending, setResultPending] = useState(false);
   const [shareFeedback, setShareFeedback] = useState("");
   const [error, setError] = useState("");
+  // Aviso de fila enquanto conecta (vaga ocupada ou posição na fila da Decart).
+  const [queueText, setQueueText] = useState("");
 
   const openRef = useRef(open);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -249,8 +269,11 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const carouselTouchStartRef = useRef<number | null>(null);
   const sessionRef = useRef<LucyTryOnSession | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingRef = useRef<VideoRecording | null>(null);
+  // Contagem, aquecimento ou gravação: um timer por vez, todos cancelados por stopTimer.
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cada tentativa de conexão ganha um número; a espera por vaga de uma tentativa antiga para.
+  const attemptRef = useRef(0);
   const sharingRef = useRef(false);
 
   const stopTimer = () => {
@@ -265,8 +288,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   };
 
   const discardRecording = () => {
-    discardRecorder(recorderRef.current);
-    recorderRef.current = null;
+    recordingRef.current?.discard();
+    recordingRef.current = null;
   };
 
   const releaseCamera = () => {
@@ -285,15 +308,21 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   };
 
   const teardown = useCallback(() => {
+    attemptRef.current += 1;
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
-    discardRecorder(recorderRef.current);
-    recorderRef.current = null;
+    recordingRef.current?.discard();
+    recordingRef.current = null;
     sessionRef.current?.close();
     sessionRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
   }, []);
+
+  // Carrega a logo ao abrir, para ela já estar pronta no primeiro quadro gravado.
+  useEffect(() => {
+    if (open && watermark) preloadWatermark(watermark);
+  }, [open, watermark]);
 
   useEffect(() => {
     openRef.current = open;
@@ -316,6 +345,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     setCameraStatus("idle");
     setRemoteStream(null);
     setError("");
+    setQueueText("");
   }, [open, teardown, product.size, product.imageUrl, firstPhase]);
 
   useEffect(() => teardown, [teardown]);
@@ -421,18 +451,42 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
         return;
       }
       stopTimer();
-      connect();
+      void connect();
     }, 1000);
   };
 
-  // Só aqui a câmera passa a ser transmitida e a sessão da fal.ai começa a contar.
-  const connect = () => {
+  // Fila do nosso lado: com a conta no limite de sessões simultâneas, espera uma vaga
+  // antes de conectar (esperar não custa nada). Sem limite configurado, segue direto.
+  const waitForSlot = async (attempt: number) => {
+    const deadline = Date.now() + SLOT_WAIT_MAX_MS;
+    while (attemptRef.current === attempt) {
+      const quota = await fetchRealtimeQuota();
+      if (!quota || quota.remaining === null || quota.remaining > 0) return true;
+      if (Date.now() > deadline) return false;
+      setQueueText("Provador cheio no momento. Você entra assim que liberar uma vaga.");
+      await new Promise((resolve) => setTimeout(resolve, SLOT_POLL_MS));
+    }
+    return false;
+  };
+
+  // Só aqui a câmera passa a ser transmitida e a sessão da Decart começa a contar.
+  const connect = async () => {
     const stream = localStreamRef.current;
     if (!stream) {
       void openCamera();
       return;
     }
+    const attempt = ++attemptRef.current;
+    setQueueText("");
     setPhase("connecting");
+    const hasSlot = await waitForSlot(attempt);
+    if (attemptRef.current !== attempt) return;
+    if (!hasSlot) {
+      setError("O provador está cheio agora. Tente de novo em alguns instantes.");
+      setPhase("error");
+      return;
+    }
+    setQueueText("");
     const prompt = buildTryOnPrompt({
       garment: product.garment,
       description: product.description,
@@ -442,70 +496,76 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     sessionRef.current = startLucyTryOn({
       localStream: stream,
       prompt,
-      referenceImageUrls: selectedImages,
-      firstFrame: captureFrame(localVideoRef.current),
+      // O modelo usa uma foto de referência por sessão: vale a selecionada.
+      referenceImageUrl: selectedImages[0] ?? product.imageUrl,
       onRemoteStream: setRemoteStream,
+      onQueuePosition: ({ position }) =>
+        setQueueText(`Provador cheio: você é o ${position}º da fila.`),
       onError: (sessionError) => {
         console.error("Lucy VTON:", sessionError);
         sessionRef.current = null;
-        if (recorderRef.current) {
+        if (recordingRef.current) {
           finish();
           setError("A conexão caiu no meio da sessão. Salvamos o que foi gravado até ali.");
           return;
         }
         stopTimer();
         setRemoteStream(null);
-        setError("Ops, algo deu errado ao conectar ao provador. Verifique se você está bem enquadrado na câmera e se sua conexão com a internet está estável, depois tente novamente.");
+        // A conta da Decart pode ter limite de sessões simultâneas (fechamento 1013).
+        setError(
+          /Concurrent session limit|\b1013\b/.test(sessionError.message)
+            ? "O provador está sendo usado por outra pessoa agora. Tente de novo em alguns segundos."
+            : "Ops, algo deu errado ao conectar ao provador. Verifique se você está bem enquadrado na câmera e se sua conexão com a internet está estável, depois tente novamente.",
+        );
         setPhase("error");
       },
     });
   };
 
-  const startRecording = (stream: MediaStream) => {
-    if (typeof MediaRecorder === "undefined") return;
-    const mimeType = RECORDER_TYPES.find((type) => MediaRecorder.isTypeSupported(type));
-    if (!mimeType) return;
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(stream, { mimeType });
-    } catch {
-      return;
-    }
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunks.push(event.data);
-    };
-    recorder.onstop = () => {
-      setResultPending(false);
-      if (!chunks.length) return;
-      const file = videoFile(chunks, recorder.mimeType || mimeType);
-      setResult({ url: URL.createObjectURL(file), file });
-    };
-    recorder.start(1000);
-    recorderRef.current = recorder;
+  // Grava o que o <video> do provador exibe, com a marca da loja por cima.
+  const startRecording = () => {
+    const video = remoteVideoRef.current;
+    recordingRef.current =
+      video &&
+      startVideoRecording(video, {
+        watermark,
+        fileName: videoFileName(product.name),
+        bitsPerSecond: RECORDING_BITRATE,
+      });
   };
 
-  // Disparado quando o vídeo com a roupa aplicada começa a tocar.
+  // Disparado quando o vídeo com a roupa aplicada começa a tocar; o ao vivo e a gravação
+  // começam depois do aquecimento. Um stream só com áudio também "toca": espera o vídeo.
   const goLive = () => {
-    if (phase !== "connecting" || !remoteStream) return;
-    setPhase("live");
-    startRecording(remoteStream);
-    let remaining = MAX_SESSION_SECONDS;
-    setSecondsLeft(remaining);
-    timerRef.current = setInterval(() => {
-      remaining -= 1;
+    if (phase !== "connecting" || !remoteStream?.getVideoTracks().length || timerRef.current)
+      return;
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setPhase("live");
+      startRecording();
+      let remaining = MAX_SESSION_SECONDS;
       setSecondsLeft(remaining);
-      if (remaining <= 0) finish();
-    }, 1000);
+      timerRef.current = setInterval(() => {
+        remaining -= 1;
+        setSecondsLeft(remaining);
+        if (remaining <= 0) finish();
+      }, 1000);
+    }, WARMUP_MS);
   };
 
   const finish = () => {
     stopTimer();
-    const recorder = recorderRef.current;
-    recorderRef.current = null;
-    if (recorder && recorder.state !== "inactive") {
+    const recording = recordingRef.current;
+    recordingRef.current = null;
+    if (recording) {
+      // Se a pessoa sair ou recomeçar antes de o vídeo ficar pronto, ele é descartado.
+      const attempt = attemptRef.current;
       setResultPending(true);
-      recorder.stop();
+      void recording.stop().then((file) => {
+        if (attemptRef.current !== attempt) return;
+        setResultPending(false);
+        if (file) setResult({ url: URL.createObjectURL(file), file });
+      });
     }
     closeSession();
     releaseCamera();
@@ -513,6 +573,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   };
 
   const backToCamera = () => {
+    attemptRef.current += 1;
     stopTimer();
     discardRecording();
     closeSession();
@@ -520,6 +581,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   };
 
   const tryAgain = () => {
+    attemptRef.current += 1;
     clearResult();
     closeSession();
     releaseCamera();
@@ -583,8 +645,9 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:h-[min(900px,94dvh)] sm:max-w-4xl sm:rounded-none sm:border lg:max-w-6xl">
-        <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10 text-left sm:px-8 sm:py-5 sm:pr-14">
+      <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:max-w-4xl [@media(min-height:721px)]:sm:h-[min(900px,94dvh)] sm:rounded-none sm:border lg:max-w-6xl">
+        {/* Telas baixas (notebooks de 768px): popup na altura toda e cabeçalho enxuto. */}
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10 text-left sm:px-8 sm:pr-14 [@media(min-height:721px)]:sm:py-5">
           <div className="flex items-center justify-between gap-2 sm:gap-4">
             <div className="min-w-0">
               <p className="truncate whitespace-nowrap text-[8px] font-bold tracking-[0.06em] sm:text-[10px] sm:tracking-[0.24em]">RESERVA <span className="font-normal tracking-[0.04em] text-muted-foreground sm:tracking-[0.12em]">· PROVADOR VIRTUAL</span></p>
@@ -592,7 +655,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 <span className="sm:hidden">Sua peça · {product.name}</span>
                 <span className="hidden sm:inline">Experimentar virtualmente</span>
               </DialogTitle>
-              <DialogDescription className="hidden truncate sm:block">{product.name}</DialogDescription>
+              <DialogDescription className="hidden truncate [@media(min-height:721px)]:sm:block">{product.name}</DialogDescription>
             </div>
             <nav aria-label="Etapas do provador" className="flex shrink-0 items-start gap-1 sm:items-center sm:gap-1">
               {([
@@ -615,7 +678,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                     className={`flex w-9 flex-col items-center gap-1 px-0 py-1 text-center transition-opacity sm:w-auto sm:flex-row sm:gap-2 sm:px-2 sm:py-2 sm:text-left ${active ? "opacity-100" : "opacity-55 hover:opacity-100"}`}
                   >
                     <span className={`grid size-6 place-items-center rounded-full border text-[9px] sm:size-7 sm:text-[10px] ${active || complete ? "border-foreground bg-foreground text-background" : "border-border"}`}>{number}</span>
-                    <span className={`max-w-9 overflow-hidden text-[7px] uppercase leading-tight tracking-[0.04em] transition-all duration-200 sm:max-w-none sm:overflow-visible sm:text-[10px] sm:tracking-[0.1em] ${active ? "max-h-6 opacity-100" : "max-h-0 opacity-0 sm:max-h-none sm:opacity-100"}`}>{label}</span>
+                    <span className={`overflow-hidden whitespace-nowrap text-[7px] uppercase leading-tight tracking-[0.04em] transition-all duration-200 sm:max-w-none sm:overflow-visible sm:text-[10px] sm:tracking-[0.1em] ${active ? "max-h-6 opacity-100" : "max-h-0 opacity-0 sm:max-h-none sm:opacity-100"}`}>{label}</span>
                   </button>
                 );
               })}
@@ -625,7 +688,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
 
         {phase === "sizes" ? (
           <div key={phase} className="try-on-enter flex min-h-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-8 sm:py-7">
+            <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-8 sm:py-4 [@media(min-height:721px)]:sm:py-6">
               <div className="flex h-full min-h-0 flex-col gap-2 sm:hidden">
                 <div
                   className="relative min-h-0 flex-1 overflow-hidden bg-[#f4f2ed]"
@@ -689,8 +752,10 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   </div>
                 )}
               </div>
-              <div className="hidden h-full min-h-0 grid-cols-[minmax(220px,0.85fr)_1.15fr] gap-10 sm:grid lg:grid-cols-[1.15fr_0.85fr] lg:gap-12">
-                <div className="relative aspect-[2/3] max-h-[34dvh] min-h-0 self-center overflow-hidden bg-muted sm:aspect-auto sm:max-h-none sm:min-h-[440px]">
+              {/* Desktop: tudo cabe na altura do popup. Os textos de apoio só aparecem em telas
+                  altas, e a coluna da direita só rola em telas muito baixas. */}
+              <div className="hidden h-full min-h-0 grid-cols-[minmax(220px,0.85fr)_1.15fr] grid-rows-[minmax(0,1fr)] gap-10 sm:grid lg:grid-cols-[1.15fr_0.85fr] lg:gap-12">
+                <div className="relative min-h-0 overflow-hidden bg-muted">
                   <img src={selectedImages[0] ?? product.imageUrl} alt={`Foto selecionada de ${product.name}`} className="absolute inset-0 size-full object-cover transition-opacity duration-300 sm:object-contain" />
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-4 pt-16 text-white sm:p-5 sm:pt-24">
                     <p className="text-[10px] uppercase tracking-[0.2em] text-white/75">Sua peça</p>
@@ -708,19 +773,19 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                     </div>
                   ) : null}
                 </div>
-                <div className="min-w-0">
+                <div className="min-h-0 min-w-0 overflow-y-auto">
                   <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Passo 1 · Personalize sua prova</p>
-                  <h3 className="mt-2 text-xl font-medium sm:text-2xl">{simulatesFit ? "Escolha tamanho e foto" : "Escolha numeração e foto"}</h3>
-                  <p className="mt-1 hidden text-sm leading-6 text-muted-foreground sm:mt-2 sm:block">{simulatesFit ? "Selecione o tamanho e a foto da peça que quer experimentar." : "Escolha o número e a foto da peça para sua prova."}</p>
+                  <h3 className="mt-2 text-2xl font-medium">{simulatesFit ? "Escolha tamanho e foto" : "Escolha numeração e foto"}</h3>
+                  <p className="mt-2 hidden text-sm leading-6 text-muted-foreground [@media(min-height:820px)]:block">{simulatesFit ? "Selecione o tamanho e a foto da peça que quer experimentar." : "Escolha o número e a foto da peça para sua prova."}</p>
                   {hasGallery ? (
-                    <fieldset className="mt-3 sm:mt-6">
-                      <legend className="flex w-full items-end justify-between gap-2 text-xs font-medium sm:gap-3 sm:text-sm">Foto da peça <span className="text-[9px] font-normal uppercase tracking-[0.1em] text-muted-foreground sm:text-[10px] sm:tracking-[0.14em]">Selecione uma</span></legend>
-                      <p className="mt-1 hidden text-xs text-muted-foreground sm:block">Escolha o ângulo que será usado na prova virtual.</p>
-                      <div className="mt-2 grid grid-cols-4 gap-1.5 sm:mt-3 sm:flex sm:gap-2 sm:overflow-x-auto sm:pb-1">
+                    <fieldset className="mt-5">
+                      <legend className="flex w-full items-end justify-between gap-3 text-sm font-medium">Foto da peça <span className="text-[10px] font-normal uppercase tracking-[0.14em] text-muted-foreground">Selecione uma</span></legend>
+                      <p className="mt-1 hidden text-xs text-muted-foreground [@media(min-height:820px)]:block">Escolha o ângulo que será usado na prova virtual.</p>
+                      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
                         {gallery.map((imageUrl, index) => {
                           const selected = selectedImages.includes(imageUrl);
                           return (
-                            <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Usar foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleImage(imageUrl)} className={`group relative aspect-square w-full shrink-0 overflow-hidden border-2 transition duration-200 hover:-translate-y-0.5 active:scale-95 sm:size-[4.5rem] ${selected ? "border-foreground shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-foreground/20 opacity-85 hover:opacity-100"}`}>
+                            <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Usar foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleImage(imageUrl)} className={`group relative size-12 shrink-0 overflow-hidden [@media(min-height:721px)]:size-16 border-2 transition duration-200 hover:-translate-y-0.5 active:scale-95 ${selected ? "border-foreground shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-foreground/20 opacity-85 hover:opacity-100"}`}>
                               <img src={imageUrl} alt={`Foto ${index + 1} de ${product.name}`} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
                               {selected ? <span className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-foreground text-xs text-background">✓</span> : null}
                             </button>
@@ -731,17 +796,17 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   ) : null}
                   {simulatesFit ? (
                     <>
-                      <div className="mt-3 space-y-3 sm:mt-7 sm:space-y-6">
+                      <div className="mt-5 space-y-4">
                         <SizeOptions compact label="Tamanho para experimentar" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
-                        <div className="border-t border-border pt-3 sm:pt-5">
+                        <div className="border-t border-border pt-4">
                           <SizeOptions compact label="Tamanho que você costuma usar" sizes={product.sizes} value={usualSize} onChange={setUsualSize} allowUnknown />
                         </div>
                       </div>
-                      <p className="mt-6 hidden border-l-2 border-sale bg-muted/50 px-4 py-3 text-sm leading-5 sm:mt-6 sm:block">{fitLabel(sizeOffset)}</p>
-                      <p className="mt-3 hidden text-xs text-muted-foreground sm:block">O caimento é uma simulação aproximada.</p>
+                      <p className="mt-4 border-l-2 border-sale bg-muted/50 px-4 py-3 text-sm leading-5">{fitLabel(sizeOffset)}</p>
+                      <p className="mt-2 text-xs text-muted-foreground">O caimento é uma simulação aproximada.</p>
                     </>
                   ) : (
-                    <div className="mt-3 space-y-3 sm:mt-7 sm:space-y-5">
+                    <div className="mt-5 space-y-4">
                       <SizeOptions compact label="Numeração do calçado" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
                       <p className="text-xs text-muted-foreground">Escolha uma foto do produto como referência.</p>
                     </div>
@@ -775,15 +840,17 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 </div>
               </div>
             </div>
-            <div className="hidden min-h-0 flex-1 grid-cols-[1.1fr_0.9fr] items-center gap-10 overflow-hidden px-8 py-8 sm:grid">
-              <div className="relative mx-auto aspect-[2/3] h-full max-h-[36dvh] w-auto max-w-full overflow-hidden border border-border bg-[#f4f2ed] text-foreground sm:h-auto sm:max-h-full sm:w-full sm:max-w-[433px]">
+            {/* Desktop: ilustração em 2:3 na altura disponível; o texto (que cresce no último passo)
+                centraliza sem cortar o topo e só rola em telas muito baixas. */}
+            <div className="hidden min-h-0 flex-1 grid-cols-[1.1fr_0.9fr] grid-rows-[minmax(0,1fr)] items-center gap-10 overflow-hidden px-8 py-6 sm:grid">
+              <div className="relative mx-auto aspect-[2/3] h-full max-h-full w-auto max-w-full overflow-hidden border border-border bg-[#f4f2ed] text-foreground">
                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_40%,rgba(255,255,255,0.95),rgba(237,234,227,0.7)_72%)]" />
                 <div className="absolute inset-0 z-[1] overflow-hidden text-foreground [&_svg]:drop-shadow-[0_8px_15px_rgba(0,0,0,0.06)]">{step.illustration}</div>
                 <div className="absolute bottom-0 left-0 h-px w-full bg-gradient-to-r from-transparent via-foreground/20 to-transparent" />
               </div>
-              <div className="flex flex-col justify-center sm:py-8">
-                <div className="mb-3 flex min-w-0 items-center gap-2 border-b border-border pb-2 sm:mb-6 sm:gap-3 sm:pb-4">
-                  <img src={selectedImages[0] ?? product.imageUrl} alt={`Peça escolhida: ${product.name}`} className="h-20 w-14 shrink-0 bg-muted object-cover" />
+              <div className="flex min-h-0 flex-col justify-center-safe self-stretch overflow-y-auto">
+                <div className="mb-4 flex min-w-0 items-center gap-3 border-b border-border pb-3 [@media(min-height:721px)]:mb-6 [@media(min-height:721px)]:pb-4">
+                  <img src={selectedImages[0] ?? product.imageUrl} alt={`Peça escolhida: ${product.name}`} className="h-16 w-11 shrink-0 bg-muted object-cover [@media(min-height:721px)]:h-20 [@media(min-height:721px)]:w-14" />
                   <div className="min-w-0">
                     <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Sua peça</p>
                     <p className="mt-1 truncate text-sm font-medium">{product.name}</p>
@@ -792,8 +859,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 </div>
                 <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Prepare-se · {tutorialStep + 1} de {steps.length}</p>
                 <h3 className="mt-2 max-w-sm text-lg font-medium leading-tight sm:mt-3 sm:text-3xl">{step.title}</h3>
-                <p className="mt-2 max-w-sm text-xs leading-5 text-muted-foreground sm:mt-3 sm:text-base sm:leading-7">{step.text}</p>
-                <nav aria-label="Etapas do tutorial" className="mt-3 grid grid-cols-3 gap-1 sm:mt-6 sm:gap-2">
+                <p className="mt-3 max-w-sm text-base leading-6 text-muted-foreground [@media(min-height:721px)]:leading-7">{step.text}</p>
+                <nav aria-label="Etapas do tutorial" className="mt-4 grid grid-cols-3 gap-2 [@media(min-height:721px)]:mt-6">
                   {steps.map((item, index) => (
                     <button key={item.title} type="button" aria-current={index === tutorialStep ? "step" : undefined} onClick={() => setTutorialStep(index)} className={`group border-t-2 py-1.5 text-left transition-colors sm:py-3 ${index === tutorialStep ? "border-foreground" : "border-border hover:border-foreground/50"}`}>
                       <span className={`text-[10px] font-semibold tracking-[0.14em] ${index === tutorialStep ? "text-foreground" : "text-muted-foreground"}`}>0{index + 1}</span>
@@ -801,7 +868,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                     </button>
                   ))}
                 </nav>
-                {isLastStep ? <p className="mt-4 flex gap-2 border border-border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground"><Camera className="size-4 shrink-0" />A câmera abre para ajudar você a se posicionar. A prova começa só quando tocar em “Começar”.</p> : null}
+                {isLastStep ? <p className="mt-4 flex gap-2 border border-border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground"><Camera className="size-4 shrink-0" />A câmera abre para ajudar você a se posicionar. A prova começa só quando {press} em “Começar”.</p> : null}
               </div>
             </div>
             <div className="flex shrink-0 gap-2 border-t border-border bg-background p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4 sm:px-8">
@@ -811,7 +878,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black">
+            {/* Câmera e prova ao vivo em fundo preto; o resultado volta ao tom claro das outras telas. */}
+            <div className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden ${phase === "result" ? "bg-[#f4f2ed]" : "bg-black"}`}>
               <div className="relative h-full w-auto max-h-full max-w-full overflow-hidden" style={{ aspectRatio: mediaAspect }}>
                 {phase === "result" ? (
                   result ? (
@@ -859,6 +927,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                     className="absolute inset-0 size-full scale-x-[-1] object-contain"
                   />
                 ) : null}
+                {/* Sem scale-x: com mirror: true a Decart já devolve a imagem espelhada. */}
                 {remoteStream ? (
                   <video
                     ref={remoteVideoRef}
@@ -872,7 +941,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                         setMediaAspect(video.videoWidth / video.videoHeight);
                       }
                     }}
-                    className={`absolute inset-0 size-full scale-x-[-1] object-contain transition-opacity duration-500 ${phase === "live" ? "opacity-100" : "opacity-0"}`}
+                    className={`absolute inset-0 size-full object-contain transition-opacity duration-500 ${phase === "live" ? "opacity-100" : "opacity-0"}`}
                   />
                 ) : null}
 
@@ -929,7 +998,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                 {phase === "connecting" ? (
                   <StageMessage>
                     <LoaderCircle className="mx-auto size-8 animate-spin" />
-                    <p className="mt-3 font-medium">Vestindo {product.name}…</p>
+                    <p className="mt-3 font-medium">{queueText || `Vestindo ${product.name}…`}</p>
                     <p className="mt-1 text-sm opacity-80">
                       Fique parado na posição por alguns segundos.
                     </p>
@@ -993,14 +1062,14 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
             {/* No mobile o resultado sai do overlay: assim os controles do vídeo ficam visíveis
                 e compartilhar vira a ação principal. */}
             {phase === "result" ? (
-              <div className="shrink-0 bg-black px-6 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-5 text-center text-white sm:hidden">
-                {error ? <p role="alert" className="mb-4 text-xs leading-5 text-white/70">{error}</p> : null}
+              <div className="shrink-0 border-t border-border bg-background px-6 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-5 text-center text-foreground sm:hidden">
+                {error ? <p role="alert" className="mb-4 text-xs leading-5 text-destructive">{error}</p> : null}
                 {result || resultPending ? (
                   <button
                     type="button"
                     disabled={!result}
                     onClick={canShareResult ? () => void shareResult() : downloadResult}
-                    className="mx-auto flex h-14 w-full max-w-72 items-center justify-center gap-2 border border-white text-sm font-bold uppercase tracking-[0.2em] transition-colors active:bg-white active:text-black disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+                    className="mx-auto flex h-14 w-full max-w-72 items-center justify-center gap-2 border border-foreground text-sm font-bold uppercase tracking-[0.2em] transition-colors active:bg-foreground active:text-background disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-foreground"
                   >
                     {result ? null : <LoaderCircle className="size-4 animate-spin" />}
                     {result && !canShareResult ? "Baixar vídeo" : "Compartilhar"}
@@ -1010,18 +1079,18 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   <button
                     type="button"
                     onClick={downloadResult}
-                    className="mt-1 inline-flex min-h-11 items-center px-2 text-sm text-white/60 underline underline-offset-4 transition-colors active:text-white focus-visible:outline-2 focus-visible:outline-white"
+                    className="mt-1 inline-flex min-h-11 items-center px-2 text-sm text-muted-foreground underline underline-offset-4 transition-colors active:text-foreground focus-visible:outline-2 focus-visible:outline-foreground"
                   >
                     ou baixar o arquivo
                   </button>
                 ) : null}
-                {shareFeedback ? <p role="status" className="mt-1 text-xs leading-5 text-white/60">{shareFeedback}</p> : null}
-                <div className="mt-3 flex justify-center gap-2 border-t border-white/15 pt-1">
-                  <button type="button" onClick={tryAgain} className="inline-flex h-11 items-center gap-2 px-3 text-[11px] uppercase tracking-[0.14em] text-white/70 active:text-white">
+                {shareFeedback ? <p role="status" className="mt-1 text-xs leading-5 text-muted-foreground">{shareFeedback}</p> : null}
+                <div className="mt-3 flex justify-center gap-2 border-t border-border pt-1">
+                  <button type="button" onClick={tryAgain} className="inline-flex h-11 items-center gap-2 px-3 text-[11px] uppercase tracking-[0.14em] text-muted-foreground active:text-foreground">
                     <RefreshCcw className="size-3.5" />
                     Tentar de novo
                   </button>
-                  <button type="button" onClick={() => onOpenChange(false)} className="inline-flex h-11 items-center px-3 text-[11px] uppercase tracking-[0.14em] text-white/70 active:text-white">
+                  <button type="button" onClick={() => onOpenChange(false)} className="inline-flex h-11 items-center px-3 text-[11px] uppercase tracking-[0.14em] text-muted-foreground active:text-foreground">
                     Concluir
                   </button>
                 </div>
@@ -1045,7 +1114,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                     </p>
                   ) : null}
                   <p className="mb-3 text-center text-xs text-muted-foreground">
-                    Ao tocar em Começar, você tem {POSITIONING_SECONDS}s para se posicionar. Depois
+                    Ao {press} em Começar, você tem {POSITIONING_SECONDS}s para se posicionar. Depois
                     gravamos {MAX_SESSION_SECONDS}s com a roupa aplicada.
                   </p>
                   <div className="flex gap-2">
