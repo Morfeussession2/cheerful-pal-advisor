@@ -96,9 +96,24 @@ function fitLabel(sizeOffset: number | undefined) {
   return "Bem larga: dois ou mais tamanhos acima do seu.";
 }
 
-// iOS/Safari não baixa blobs via <a download>; o caminho é a folha de compartilhamento.
-function canShareFiles() {
-  return typeof navigator !== "undefined" && typeof navigator.share === "function";
+// O Chrome do Android só compartilha tipos da sua lista e recusa parâmetros de codec
+// ("video/webm;codecs=vp9"), então o arquivo leva apenas o tipo base.
+function videoFile(chunks: Blob[], mimeType: string) {
+  const mp4 = mimeType.startsWith("video/mp4");
+  return new File(chunks, `provador-reserva.${mp4 ? "mp4" : "webm"}`, {
+    type: mp4 ? "video/mp4" : "video/webm",
+  });
+}
+
+function canShareFile(file: File) {
+  return typeof navigator.canShare === "function" && navigator.canShare({ files: [file] });
+}
+
+function isIOS() {
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
 }
 
 function SizeOptions({
@@ -223,7 +238,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const [countdown, setCountdown] = useState(POSITIONING_SECONDS);
   const [secondsLeft, setSecondsLeft] = useState(MAX_SESSION_SECONDS);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [result, setResult] = useState<{ url: string; blob: Blob; extension: string } | null>(null);
+  const [result, setResult] = useState<{ url: string; file: File } | null>(null);
   const [resultPending, setResultPending] = useState(false);
   const [shareFeedback, setShareFeedback] = useState("");
   const [error, setError] = useState("");
@@ -236,6 +251,7 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
   const sessionRef = useRef<LucyTryOnSession | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sharingRef = useRef(false);
 
   const stopTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -462,12 +478,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     recorder.onstop = () => {
       setResultPending(false);
       if (!chunks.length) return;
-      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
-      setResult({
-        url: URL.createObjectURL(blob),
-        blob,
-        extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm",
-      });
+      const file = videoFile(chunks, recorder.mimeType || mimeType);
+      setResult({ url: URL.createObjectURL(file), file });
     };
     recorder.start(1000);
     recorderRef.current = recorder;
@@ -516,39 +528,49 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
     setPhase("sizes");
   };
 
-  // No iOS, "baixar" um blob não funciona: abrimos a folha de compartilhamento,
-  // que permite salvar o vídeo no app Fotos/Arquivos.
+  // Abre a folha de compartilhamento do aparelho (WhatsApp, Instagram, "Salvar vídeo"…).
+  // O iOS só aceita navigator.share disparado direto pelo toque: nada de await antes dele.
   const shareResult = async () => {
-    if (!result) return;
-    const filename = `provador-reserva.${result.extension}`;
-    const shareData = { files: [new File([result.blob], filename, { type: result.blob.type })] };
-
-    try {
-      if (navigator.share && navigator.canShare?.(shareData)) {
-        await navigator.share(shareData);
-        return;
-      }
-    } catch (shareError) {
-      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
-    }
-
-    const isIOS =
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-    if (isIOS) {
-      window.open(result.url, "_blank", "noopener,noreferrer");
+    if (!result || sharingRef.current) return;
+    if (!canShareFile(result.file)) {
+      downloadResult();
       return;
     }
+    sharingRef.current = true;
+    setShareFeedback("");
+    try {
+      await navigator.share({ files: [result.file] });
+    } catch (shareError) {
+      // AbortError: a pessoa fechou a folha sem escolher um destino.
+      if (!(shareError instanceof DOMException && shareError.name === "AbortError")) {
+        console.error("Compartilhar vídeo:", shareError);
+        downloadResult();
+      }
+    } finally {
+      sharingRef.current = false;
+    }
+  };
 
+  // Android salva em Downloads; o Safari do iOS (13+) pergunta e salva no app Arquivos.
+  const downloadResult = () => {
+    if (!result) return;
     const link = document.createElement("a");
     link.href = result.url;
-    link.download = filename;
+    link.download = result.file.name;
+    document.body.appendChild(link);
     link.click();
+    link.remove();
+    if (isIOS() && canShareFile(result.file)) {
+      setShareFeedback(
+        "O vídeo fica em Arquivos › Downloads. Para salvar na galeria, use Compartilhar › Salvar vídeo.",
+      );
+    }
   };
 
   const tryIndex = product.sizes.indexOf(trySize);
   const usualIndex = usualSize ? product.sizes.indexOf(usualSize) : -1;
   const sizeOffset = tryIndex >= 0 && usualIndex >= 0 ? tryIndex - usualIndex : undefined;
+  const canShareResult = result ? canShareFile(result.file) : false;
 
   const step = steps[tutorialStep] ?? steps[0]!;
   const isLastStep = tutorialStep === steps.length - 1;
@@ -941,37 +963,70 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   </StageMessage>
                 ) : null}
               </div>
-              <div className="absolute inset-x-0 bottom-0 z-20 border-t border-white/20 bg-background/90 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-foreground shadow-[0_-12px_35px_rgba(0,0,0,0.18)] backdrop-blur-md sm:hidden">
-                {phase === "camera" && cameraStatus === "ready" ? (
-                  <>
-                    <p className="mb-2 text-center text-[10px] text-muted-foreground">
-                      {simulatesFit ? `Tamanho ${trySize}${usualSize ? ` · você costuma usar ${usualSize}` : ""} · ` : ""}
-                      Toque em começar e se posicione
-                    </p>
+              {phase !== "result" ? (
+                <div className="absolute inset-x-0 bottom-0 z-20 border-t border-white/20 bg-background/90 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-foreground shadow-[0_-12px_35px_rgba(0,0,0,0.18)] backdrop-blur-md sm:hidden">
+                  {phase === "camera" && cameraStatus === "ready" ? (
+                    <>
+                      <p className="mb-2 text-center text-[10px] text-muted-foreground">
+                        {simulatesFit ? `Tamanho ${trySize}${usualSize ? ` · você costuma usar ${usualSize}` : ""} · ` : ""}
+                        Toque em começar e se posicione
+                      </p>
+                      <div className="flex gap-2">
+                        <Button type="button" variant="outline" className="h-11 rounded-none px-4" onClick={showTutorial}>Tutorial</Button>
+                        <Button type="button" className="h-11 flex-1 rounded-none" onClick={startCountdown}><Sparkles />Começar</Button>
+                      </div>
+                    </>
+                  ) : null}
+                  {phase === "camera" && cameraStatus === "requesting" ? <Button type="button" className="h-11 w-full rounded-none" disabled>Abrindo câmera…</Button> : null}
+                  {(phase === "camera" && (cameraStatus === "denied" || cameraStatus === "unavailable")) || phase === "error" ? (
                     <div className="flex gap-2">
                       <Button type="button" variant="outline" className="h-11 rounded-none px-4" onClick={showTutorial}>Tutorial</Button>
-                      <Button type="button" className="h-11 flex-1 rounded-none" onClick={startCountdown}><Sparkles />Começar</Button>
+                      <Button type="button" className="h-11 flex-1 rounded-none" onClick={() => void openCamera()}><RefreshCcw />Tentar novamente</Button>
                     </div>
-                  </>
-                ) : null}
-                {phase === "camera" && cameraStatus === "requesting" ? <Button type="button" className="h-11 w-full rounded-none" disabled>Abrindo câmera…</Button> : null}
-                {(phase === "camera" && (cameraStatus === "denied" || cameraStatus === "unavailable")) || phase === "error" ? (
-                  <div className="flex gap-2">
-                    <Button type="button" variant="outline" className="h-11 rounded-none px-4" onClick={showTutorial}>Tutorial</Button>
-                    <Button type="button" className="h-11 flex-1 rounded-none" onClick={() => void openCamera()}><RefreshCcw />Tentar novamente</Button>
-                  </div>
-                ) : null}
-                {phase === "countdown" || phase === "connecting" ? <Button type="button" variant="outline" className="h-11 w-full rounded-none" onClick={backToCamera}>Cancelar</Button> : null}
-                {phase === "live" ? <Button type="button" className="h-11 w-full rounded-none" onClick={finish}><CircleStop />Encerrar prova</Button> : null}
-                {phase === "result" ? (
-                  <div className="grid grid-cols-2 gap-2">
-                    {result ? <Button type="button" className="col-span-2 h-11 rounded-none" onClick={() => void shareResult()}>{canShareFiles() ? <Share2 /> : <Download />}{canShareFiles() ? "Compartilhar ou salvar vídeo" : "Baixar vídeo"}</Button> : null}
-                    <Button type="button" variant="outline" className="h-11 rounded-none" onClick={tryAgain}><RefreshCcw />Tentar de novo</Button>
-                    <Button type="button" variant="outline" className="h-11 rounded-none" onClick={() => onOpenChange(false)}>Concluir</Button>
-                  </div>
-                ) : null}
-              </div>
+                  ) : null}
+                  {phase === "countdown" || phase === "connecting" ? <Button type="button" variant="outline" className="h-11 w-full rounded-none" onClick={backToCamera}>Cancelar</Button> : null}
+                  {phase === "live" ? <Button type="button" className="h-11 w-full rounded-none" onClick={finish}><CircleStop />Encerrar prova</Button> : null}
+                </div>
+              ) : null}
             </div>
+
+            {/* No mobile o resultado sai do overlay: assim os controles do vídeo ficam visíveis
+                e compartilhar vira a ação principal. */}
+            {phase === "result" ? (
+              <div className="shrink-0 bg-black px-6 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-5 text-center text-white sm:hidden">
+                {error ? <p role="alert" className="mb-4 text-xs leading-5 text-white/70">{error}</p> : null}
+                {result || resultPending ? (
+                  <button
+                    type="button"
+                    disabled={!result}
+                    onClick={canShareResult ? () => void shareResult() : downloadResult}
+                    className="mx-auto flex h-14 w-full max-w-72 items-center justify-center gap-2 border border-white text-sm font-bold uppercase tracking-[0.2em] transition-colors active:bg-white active:text-black disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+                  >
+                    {result ? null : <LoaderCircle className="size-4 animate-spin" />}
+                    {result && !canShareResult ? "Baixar vídeo" : "Compartilhar"}
+                  </button>
+                ) : null}
+                {result && canShareResult ? (
+                  <button
+                    type="button"
+                    onClick={downloadResult}
+                    className="mt-1 inline-flex min-h-11 items-center px-2 text-sm text-white/60 underline underline-offset-4 transition-colors active:text-white focus-visible:outline-2 focus-visible:outline-white"
+                  >
+                    ou baixar o arquivo
+                  </button>
+                ) : null}
+                {shareFeedback ? <p role="status" className="mt-1 text-xs leading-5 text-white/60">{shareFeedback}</p> : null}
+                <div className="mt-3 flex justify-center gap-2 border-t border-white/15 pt-1">
+                  <button type="button" onClick={tryAgain} className="inline-flex h-11 items-center gap-2 px-3 text-[11px] uppercase tracking-[0.14em] text-white/70 active:text-white">
+                    <RefreshCcw className="size-3.5" />
+                    Tentar de novo
+                  </button>
+                  <button type="button" onClick={() => onOpenChange(false)} className="inline-flex h-11 items-center px-3 text-[11px] uppercase tracking-[0.14em] text-white/70 active:text-white">
+                    Concluir
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="hidden shrink-0 border-t border-border p-4 sm:block">
               {phase === "camera" && cameraStatus === "ready" ? (
@@ -1071,8 +1126,8 @@ export function VirtualTryOn({ open, product, onOpenChange }: VirtualTryOnProps)
                   <div className="flex flex-col gap-2">
                     {result ? (
                       <Button type="button" className={`w-full ${footerButton}`} onClick={() => void shareResult()}>
-                        {canShareFiles() ? <Share2 /> : <Download />}
-                        {canShareFiles() ? "Compartilhar ou salvar vídeo" : "Baixar vídeo"}
+                        {canShareResult ? <Share2 /> : <Download />}
+                        {canShareResult ? "Compartilhar ou salvar vídeo" : "Baixar vídeo"}
                       </Button>
                     ) : null}
                     <div className="flex gap-2">
