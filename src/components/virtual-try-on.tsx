@@ -14,8 +14,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   BodyGuide,
   DistanceIllustration,
-  LaptopDistanceIllustration,
-  LaptopSetupIllustration,
   LightIllustration,
   PhoneStandIllustration,
   type TryOnFraming,
@@ -198,7 +196,7 @@ function tutorialSteps(framing: TryOnFraming, touch: boolean) {
       : {
           title: "Posicione o computador",
           text: "Deixe o notebook ou a webcam numa mesa, com um espaço livre à frente. Incline a tela até a câmera mirar em você.",
-          illustration: <LaptopSetupIllustration className="size-full" />,
+          illustration: <PhoneStandIllustration className="size-full object-contain" />,
         },
     {
       title: touch ? "Afaste-se" : "Afaste-se do computador",
@@ -206,11 +204,7 @@ function tutorialSteps(framing: TryOnFraming, touch: boolean) {
         framing === "upper"
           ? "Dê um ou dois passos para trás, até aparecer da cabeça ao quadril."
           : "Dê três ou quatro passos para trás, até aparecer da cabeça aos pés.",
-      illustration: touch ? (
-        <DistanceIllustration framing={framing} className="size-full object-contain" />
-      ) : (
-        <LaptopDistanceIllustration className="size-full" />
-      ),
+      illustration: <DistanceIllustration framing={framing} className="size-full object-contain" />,
     },
     {
       title: "Capriche na luz",
