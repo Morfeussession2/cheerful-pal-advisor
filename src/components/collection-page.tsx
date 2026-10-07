@@ -245,7 +245,7 @@ export function CollectionPage({ slug }: { slug: string }) {
   return (
     <main className="min-h-screen bg-background text-foreground">
       <header className="flex h-16 items-center border-b border-border px-4 md:px-10">
-        <a href="/" aria-label="Voltar à vitrine" className="flex items-center gap-2 text-sm"><ArrowLeft className="size-4" />Reserva</a>
+        <a href="/reserva" aria-label="Voltar à vitrine" className="flex items-center gap-2 text-sm"><ArrowLeft className="size-4" />Reserva</a>
         <span className="ml-auto text-xs uppercase tracking-[0.16em] text-muted-foreground">Coleção</span>
       </header>
       <section className="mx-auto max-w-[1600px] px-4 py-7 md:px-8 md:py-10">
@@ -285,7 +285,7 @@ export function ProductDetailPage({ productId, initialSize }: { productId: strin
     <main className="min-h-screen bg-background text-foreground">
       <header className="flex h-16 items-center border-b border-border px-4 md:px-10">
         <a href="/colecoes/colecao-reserva-all-black" className="flex items-center gap-2 text-sm"><ArrowLeft className="size-4" />Voltar à coleção</a>
-        <a href="/" className="ml-auto text-sm font-semibold tracking-wide">RESERVA</a>
+        <a href="/reserva" className="ml-auto text-sm font-semibold tracking-wide">RESERVA</a>
       </header>
       <section className="mx-auto grid max-w-[1280px] gap-6 px-4 py-5 md:grid-cols-2 md:gap-12 md:px-10 md:py-10">
         <div className="min-w-0">

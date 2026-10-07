@@ -1,14 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { EditorialStorefront } from "@/components/editorial-storefront";
+import { MockupSelector } from "@/components/mockup-selector";
 
 export const Route = createFileRoute("/")({
-  component: EditorialStorefront,
+  component: MockupSelector,
   head: () => ({
     meta: [
-      { title: "Reserva | Moda Masculina Autêntica e Estilo Brasileiro" },
-      { name: "description", content: "Moda masculina autêntica, novidades, calçados e acessórios com estilo brasileiro." },
-      { property: "og:title", content: "Reserva | Moda Masculina Autêntica e Estilo Brasileiro" },
-      { property: "og:description", content: "Moda masculina autêntica, novidades, calçados e acessórios com estilo brasileiro." },
+      { title: "Provador Virtual | Escolha sua marca" },
+      { name: "description", content: "Escolha entre as experiências de provador virtual Reserva e Spelho." },
+      { property: "og:title", content: "Provador Virtual | Escolha sua marca" },
+      { property: "og:description", content: "Escolha entre as experiências de provador virtual Reserva e Spelho." },
       { property: "og:type", content: "website" },
       { property: "og:url", content: "/" },
       { name: "twitter:card", content: "summary_large_image" },

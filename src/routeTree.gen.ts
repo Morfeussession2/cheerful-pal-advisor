@@ -10,12 +10,24 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ReservaRouteImport } from './routes/reserva'
+import { Route as SpelhoRouteImport } from './routes/spelho'
 import { Route as ColecoesSlugRouteImport } from './routes/colecoes/$slug'
 import { Route as ProdutoProductIdRouteImport } from './routes/produto/$productId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReservaRoute = ReservaRouteImport.update({
+  id: '/reserva',
+  path: '/reserva',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SpelhoRoute = SpelhoRouteImport.update({
+  id: '/spelho',
+  path: '/spelho',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ColecoesSlugRoute = ColecoesSlugRouteImport.update({
@@ -31,30 +43,45 @@ const ProdutoProductIdRoute = ProdutoProductIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/reserva': typeof ReservaRoute
+  '/spelho': typeof SpelhoRoute
   '/colecoes/$slug': typeof ColecoesSlugRoute
   '/produto/$productId': typeof ProdutoProductIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/reserva': typeof ReservaRoute
+  '/spelho': typeof SpelhoRoute
   '/colecoes/$slug': typeof ColecoesSlugRoute
   '/produto/$productId': typeof ProdutoProductIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/reserva': typeof ReservaRoute
+  '/spelho': typeof SpelhoRoute
   '/colecoes/$slug': typeof ColecoesSlugRoute
   '/produto/$productId': typeof ProdutoProductIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/colecoes/$slug' | '/produto/$productId'
+  fullPaths:
+    '/' | '/reserva' | '/spelho' | '/colecoes/$slug' | '/produto/$productId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/colecoes/$slug' | '/produto/$productId'
-  id: '__root__' | '/' | '/colecoes/$slug' | '/produto/$productId'
+  to: '/' | '/reserva' | '/spelho' | '/colecoes/$slug' | '/produto/$productId'
+  id:
+    | '__root__'
+    | '/'
+    | '/reserva'
+    | '/spelho'
+    | '/colecoes/$slug'
+    | '/produto/$productId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ReservaRoute: typeof ReservaRoute
+  SpelhoRoute: typeof SpelhoRoute
   ColecoesSlugRoute: typeof ColecoesSlugRoute
   ProdutoProductIdRoute: typeof ProdutoProductIdRoute
 }
@@ -66,6 +93,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reserva': {
+      id: '/reserva'
+      path: '/reserva'
+      fullPath: '/reserva'
+      preLoaderRoute: typeof ReservaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/spelho': {
+      id: '/spelho'
+      path: '/spelho'
+      fullPath: '/spelho'
+      preLoaderRoute: typeof SpelhoRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/colecoes/$slug': {
@@ -87,6 +128,8 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ReservaRoute: ReservaRoute,
+  SpelhoRoute: SpelhoRoute,
   ColecoesSlugRoute: ColecoesSlugRoute,
   ProdutoProductIdRoute: ProdutoProductIdRoute,
 }

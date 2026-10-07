@@ -23,9 +23,11 @@ export interface CameraMeasurements {
 export interface SizeChartRow {
   size: string;
   /** Maior tórax (cm) que o tamanho veste. */
-  chestMaxCm: number;
+  chestMaxCm?: number;
   /** Maior cintura (cm) que o tamanho veste. */
   waistMaxCm: number;
+  /** Maior largura de ombros (cm) que o tamanho veste, quando houver. */
+  shoulderMaxCm?: number;
 }
 
 export interface SizeRecommendation {
@@ -37,7 +39,7 @@ export interface SizeRecommendation {
   /** A câmera mediu a pessoa (mesmo que não tenha mudado o tamanho). */
   usedCamera: boolean;
   /** Estimativas usadas, para diagnóstico e calibração. */
-  estimates: { chestCm: number; waistCm: number; shoulderCm?: number | undefined };
+  estimates: { chestCm?: number | undefined; waistCm: number; shoulderCm?: number | undefined };
 }
 
 // Regressão por altura e peso: para o mesmo peso, quem é mais alto tem tórax e
@@ -70,8 +72,10 @@ export function isValidProfile(profile: Partial<BodyProfile> | null): profile is
 }
 
 // Menor tamanho que veste a medida; quem passa do maior fica no maior.
-function sizeIndexFor(chart: SizeChartRow[], key: "chestMaxCm" | "waistMaxCm", valueCm: number) {
-  const index = chart.findIndex((row) => valueCm <= row[key]);
+type ChartMeasure = "chestMaxCm" | "waistMaxCm" | "shoulderMaxCm";
+
+function sizeIndexFor(chart: SizeChartRow[], key: ChartMeasure, valueCm: number) {
+  const index = chart.findIndex((row) => row[key] !== undefined && valueCm <= row[key]!);
   return index === -1 ? chart.length - 1 : index;
 }
 
@@ -80,16 +84,19 @@ function sizeIndexFor(chart: SizeChartRow[], key: "chestMaxCm" | "waistMaxCm", v
 function withAlternative(
   chart: SizeChartRow[],
   index: number,
-  key: "chestMaxCm" | "waistMaxCm",
+  key: ChartMeasure,
   valueCm: number,
 ): Pick<SizeRecommendation, "size" | "alternative"> {
   const row = chart[index]!;
   const smaller = chart[index - 1];
   const larger = chart[index + 1];
-  if (larger && row[key] - valueCm < BORDERLINE_CM) {
+  const rowLimit = row[key];
+  const smallerLimit = smaller?.[key];
+  if (rowLimit === undefined) return { size: row.size };
+  if (larger && rowLimit - valueCm < BORDERLINE_CM) {
     return { size: row.size, alternative: { size: larger.size, when: "folgado" } };
   }
-  if (smaller && valueCm - smaller[key] < BORDERLINE_CM) {
+  if (smaller && smallerLimit !== undefined && valueCm - smallerLimit < BORDERLINE_CM) {
     return { size: row.size, alternative: { size: smaller.size, when: "justo" } };
   }
   return { size: row.size };
@@ -105,12 +112,29 @@ export function recommendSize(
   if (garment === "shoes" || chart.length === 0) return null;
 
   const rows = [...chart];
-  const chestCm = estimateChest(profile);
   const waistCm = estimateWaist(profile);
   const shoulderCm = camera?.shoulderWidthCm;
   const usedCamera = shoulderCm !== undefined;
-  const estimates = { chestCm, waistCm, shoulderCm };
   const waistIndex = sizeIndexFor(rows, "waistMaxCm", waistCm);
+
+  // Grades da Spelho usam limites de ombro e cintura; nesse caso não usamos
+  // a estimativa de tórax nem a regra genérica de ombros largos.
+  if (rows.every((row) => row.shoulderMaxCm !== undefined)) {
+    const shoulderIndex =
+      shoulderCm === undefined ? -1 : sizeIndexFor(rows, "shoulderMaxCm", shoulderCm);
+    const index = Math.max(waistIndex, shoulderIndex);
+    const basis = shoulderIndex >= waistIndex && shoulderCm !== undefined ? "ombros" : "cintura";
+    const measure = basis === "ombros" ? shoulderCm! : waistCm;
+    return {
+      ...withAlternative(rows, index, basis === "ombros" ? "shoulderMaxCm" : "waistMaxCm", measure),
+      basis,
+      usedCamera,
+      estimates: { waistCm, shoulderCm },
+    };
+  }
+
+  const chestCm = estimateChest(profile);
+  const estimates = { chestCm, waistCm, shoulderCm };
 
   // Peças de baixo: quem manda é a cintura.
   if (garment === "bottom") {

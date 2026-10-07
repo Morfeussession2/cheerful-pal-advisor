@@ -33,6 +33,7 @@ import { fetchRealtimeQuota, startLucyTryOn, type LucyTryOnSession } from "@/lib
 import {
   isValidProfile,
   recommendSize,
+  type CameraMeasurements,
   type BodyProfile,
   type SizeChartRow,
   type SizeRecommendation,
@@ -65,6 +66,8 @@ export interface TryOnProduct {
 interface VirtualTryOnProps {
   open: boolean;
   product: TryOnProduct;
+  /** Só altera a identidade visual; o fluxo do provador permanece o mesmo. */
+  brand?: "reserva" | "spelho";
   /** Marca gravada no canto inferior direito do vídeo. */
   watermark?: Watermark | undefined;
   onOpenChange: (open: boolean) => void;
@@ -282,7 +285,7 @@ function StageMessage({ children }: { children: ReactNode }) {
   );
 }
 
-export function VirtualTryOn({ open, product, watermark, onOpenChange }: VirtualTryOnProps) {
+export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOpenChange }: VirtualTryOnProps) {
   const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
   const touch = useTouchDevice();
   const steps = tutorialSteps(framing, touch);
@@ -334,6 +337,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const attemptRef = useRef(0);
   const sharingRef = useRef(false);
   const samplerRef = useRef<BodySampler | null>(null);
+  const cameraMeasurementsRef = useRef<CameraMeasurements | null>(null);
 
   const stopTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -352,6 +356,9 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   };
 
   const releaseCamera = () => {
+    samplerRef.current?.stop();
+    samplerRef.current = null;
+    cameraMeasurementsRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     setCameraStatus("idle");
@@ -388,6 +395,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   useEffect(() => {
     openRef.current = open;
     if (open) {
+      cameraMeasurementsRef.current = null;
       setTrySize(product.size);
       setUsualSize(readUsualSize());
       setSelectedImages([product.imageUrl]);
@@ -420,11 +428,17 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   useEffect(() => {
     const video = localVideoRef.current;
     const stream = localStreamRef.current;
-    if (cameraStatus === "ready" && video && stream && video.srcObject !== stream) {
+    if (cameraStatus !== "ready" || phase !== "camera" || !video || !stream) return;
+    if (video.srcObject !== stream) {
       video.srcObject = stream;
       void video.play().catch(() => undefined);
     }
-  }, [cameraStatus, phase]);
+    if (sizeChart && profile && !samplerRef.current) {
+      // Começa a medir assim que a prévia da câmera está disponível, dando
+      // tempo para coletar quadros enquanto a pessoa se posiciona.
+      samplerRef.current = startBodySampling(video, profile.heightCm);
+    }
+  }, [cameraStatus, phase, sizeChart, profile]);
 
   useEffect(() => {
     const video = remoteVideoRef.current;
@@ -460,6 +474,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     setPhase("camera");
     setSkipTutorial(true);
     setError("");
+    cameraMeasurementsRef.current = null;
     if (localStreamRef.current) {
       setCameraStatus("ready");
       return;
@@ -571,15 +586,25 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       void openCamera();
       return;
     }
+    // Finaliza a leitura feita durante o enquadramento e a contagem. Esse
+    // mesmo tamanho de referência orienta o prompt e a recomendação do resultado.
+    const measurements = stopSampling();
+    cameraMeasurementsRef.current = measurements;
+    const measurementRecommendation =
+      sizeChart && profile
+        ? recommendSize(product.garment, sizeChart, profile, measurements)
+        : null;
+    // O tamanho habitual informado pela pessoa é a referência principal para o
+    // caimento; a recomendação pelas medidas entra como alternativa se ela não informou.
+    const referenceSize = usualSize ?? measurementRecommendation?.size;
+    const selectedIndex = product.sizes.indexOf(trySize);
+    const referenceIndex = referenceSize ? product.sizes.indexOf(referenceSize) : -1;
+    const promptSizeOffset =
+      selectedIndex >= 0 && referenceIndex >= 0 ? selectedIndex - referenceIndex : undefined;
     const attempt = ++attemptRef.current;
     setQueueText("");
     setPhase("connecting");
     // Mede os ombros na câmera crua enquanto a pessoa fica parada na posição.
-    stopSampling();
-    samplerRef.current =
-      sizeChart && profile && localVideoRef.current
-        ? startBodySampling(localVideoRef.current, profile.heightCm)
-        : null;
     const hasSlot = await waitForSlot(attempt);
     if (attemptRef.current !== attempt) return;
     if (!hasSlot) {
@@ -592,7 +617,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     const prompt = buildTryOnPrompt({
       garment: product.garment,
       description: product.description,
-      sizeOffset: simulatesFit ? sizeOffset : undefined,
+      sizeOffset: simulatesFit ? promptSizeOffset : undefined,
     });
     if (import.meta.env.DEV) console.info("Lucy VTON prompt:", prompt);
     sessionRef.current = startLucyTryOn({
@@ -658,7 +683,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
 
   const finish = () => {
     stopTimer();
-    const measurements = stopSampling();
+    const measurements = cameraMeasurementsRef.current ?? stopSampling();
     if (sizeChart && profile) {
       const next = recommendSize(product.garment, sizeChart, profile, measurements);
       if (import.meta.env.DEV)
@@ -686,6 +711,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     attemptRef.current += 1;
     stopTimer();
     stopSampling();
+    cameraMeasurementsRef.current = null;
     discardRecording();
     closeSession();
     setPhase("camera");
@@ -694,6 +720,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const tryAgain = () => {
     attemptRef.current += 1;
     clearResult();
+    cameraMeasurementsRef.current = null;
     setRecommendation(null);
     closeSession();
     releaseCamera();
@@ -769,17 +796,35 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
         {recommendationReason(recommendation)} É uma estimativa, não uma medida exata.{" "}
         <button type="button" className="underline underline-offset-2" onClick={editProfile}>Alterar altura e peso</button>
       </p>
+      <div className="mt-3 grid grid-cols-2 gap-2" aria-label="Medidas consideradas na recomendação">
+        <div className="border border-border bg-muted/30 px-3 py-2">
+          <p className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Ombros</p>
+          <p className="mt-1 text-lg font-semibold leading-none">
+            {recommendation.estimates.shoulderCm !== undefined
+              ? `${recommendation.estimates.shoulderCm.toFixed(1)} cm`
+              : "Não medidos"}
+          </p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+            {recommendation.usedCamera ? "Medidos pela câmera" : "Câmera não conseguiu medir"}
+          </p>
+        </div>
+        <div className="border border-border bg-muted/30 px-3 py-2">
+          <p className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Cintura</p>
+          <p className="mt-1 text-lg font-semibold leading-none">{recommendation.estimates.waistCm.toFixed(1)} cm</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">Estimativa por altura e peso</p>
+        </div>
+      </div>
     </div>
   ) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:max-w-4xl [@media(min-height:721px)]:sm:h-[min(900px,94dvh)] sm:rounded-none sm:border lg:max-w-6xl">
+      <DialogContent data-brand={brand} style={brand === "spelho" ? { borderRadius: "24px", border: "1px solid rgba(0,0,0,0.12)", backgroundColor: "#ffffff" } : undefined} className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:max-w-4xl [@media(min-height:721px)]:sm:h-[min(900px,94dvh)] sm:rounded-none sm:border lg:max-w-6xl">
         {/* Telas baixas (notebooks de 768px): popup na altura toda e cabeçalho enxuto. */}
         <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10 text-left sm:px-8 sm:pr-14 [@media(min-height:721px)]:sm:py-5">
           <div className="flex items-center justify-between gap-2 sm:gap-4">
             <div className="min-w-0">
-              <p className="truncate whitespace-nowrap text-[8px] font-bold tracking-[0.06em] sm:text-[10px] sm:tracking-[0.24em]">RESERVA <span className="font-normal tracking-[0.04em] text-muted-foreground sm:tracking-[0.12em]">· PROVADOR VIRTUAL</span></p>
+              <p className="truncate whitespace-nowrap text-[8px] font-bold tracking-[0.06em] sm:text-[10px] sm:tracking-[0.24em]">{brand === "spelho" ? "SPELHO" : "RESERVA"} <span className="font-normal tracking-[0.04em] text-muted-foreground sm:tracking-[0.12em]">· PROVADOR VIRTUAL</span></p>
               <DialogTitle className="mt-1 truncate text-xs font-medium sm:text-lg">
                 <span className="sm:hidden">Sua peça · {product.name}</span>
                 <span className="hidden sm:inline">Experimentar virtualmente</span>

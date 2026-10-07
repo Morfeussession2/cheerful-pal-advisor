@@ -38,11 +38,11 @@ function fitSentence(garment: GarmentKind, sizeOffset: number) {
   if (garment === "shoes") return "";
   const [tighter, snug, loose, looser] = FIT_DETAILS[garment];
   if (sizeOffset <= -2)
-    return `The garment is two or more sizes too small for this person: very tight, ${tighter}.`;
+    return `The garment is two or more sizes smaller than the person's reference size: very tight, ${tighter}.`;
   if (sizeOffset === -1)
-    return `The garment is one size smaller than this person usually wears: a snug fit, ${snug}.`;
+    return `The garment is one size smaller than the person's reference size: snug, ${snug}.`;
   if (sizeOffset === 1)
-    return `The garment is one size larger than this person usually wears: a relaxed fit, ${loose}.`;
+    return `The garment is one size larger than this person's measurement-based recommended size: a relaxed fit, ${loose}.`;
   if (sizeOffset >= 2)
     return `The garment is two or more sizes too big for this person: oversized and baggy, ${looser}.`;
   return "The garment fits this person true to size, with its natural cut.";
@@ -52,14 +52,14 @@ export interface TryOnPromptInput {
   garment: GarmentKind;
   /** Descrição em inglês da peça da foto de referência (cor, tecido, modelagem, detalhes). */
   description?: string | undefined;
-  /** Posição do tamanho experimentado menos a do tamanho habitual na grade (ex.: G vs M = 1). */
+  /** Diferença entre o tamanho experimentado e o tamanho de referência da pessoa (ex.: G vs M = 1). */
   sizeOffset?: number | undefined;
 }
 
 export function buildTryOnPrompt({ garment, description, sizeOffset }: TryOnPromptInput) {
   return [
     `Substitute ${TARGET[garment]} with ${GARMENT_NOUN[garment]} from the reference image${description ? `: ${description}` : ""}.`,
-    "Match the exact color, material, texture and construction details of the reference garment.",
+    "Match the exact color, material, texture and construction details of the reference garment. Follow the size-fit instruction for its fit.",
     sizeOffset === undefined ? "" : fitSentence(garment, sizeOffset),
     "Keep the person's face, hair, body shape, pose, other clothes and the background unchanged.",
   ]
