@@ -6,6 +6,7 @@ import {
   Download,
   LoaderCircle,
   RefreshCcw,
+  Ruler,
   Share2,
   Sparkles,
 } from "lucide-react";
@@ -19,6 +20,7 @@ import {
   type TryOnFraming,
 } from "@/components/try-on-illustrations";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -26,7 +28,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { loadBodyMeasurer, startBodySampling, type BodySampler } from "@/lib/body-measure";
 import { fetchRealtimeQuota, startLucyTryOn, type LucyTryOnSession } from "@/lib/lucy-vton";
+import {
+  isValidProfile,
+  recommendSize,
+  type BodyProfile,
+  type SizeChartRow,
+  type SizeRecommendation,
+} from "@/lib/size-recommendation";
 import { buildTryOnPrompt, type GarmentKind } from "@/lib/try-on-prompt";
 import {
   preloadWatermark,
@@ -48,6 +58,8 @@ export interface TryOnProduct {
   sizes: readonly string[];
   /** Tamanho escolhido na página do produto. */
   size: string;
+  /** Tabela de medidas da peça; com ela o provador recomenda um tamanho. */
+  sizeChart?: readonly SizeChartRow[] | undefined;
 }
 
 interface VirtualTryOnProps {
@@ -60,6 +72,7 @@ interface VirtualTryOnProps {
 
 type Phase =
   | "photos"
+  | "profile"
   | "sizes"
   | "tutorial"
   | "camera"
@@ -84,6 +97,50 @@ const SLOT_WAIT_MAX_MS = 120_000;
 const RECORDING_BITRATE = 8_000_000;
 const BRAND = "Reserva";
 const USUAL_SIZE_KEY = "reserva:tamanho-habitual";
+const PROFILE_KEY = "reserva:perfil-corpo";
+
+// Altura e peso ficam só neste aparelho, para não perguntar de novo.
+function readProfile(): BodyProfile | null {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(PROFILE_KEY) ?? "null",
+    ) as Partial<BodyProfile> | null;
+    return isValidProfile(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveProfile(profile: BodyProfile) {
+  try {
+    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    // Sem storage disponível: segue sem lembrar.
+  }
+}
+
+// Aceita "175", "1,75" ou "1.75" (metros viram centímetros).
+function parseProfile(heightInput: string, weightInput: string): Partial<BodyProfile> {
+  const height = Number(heightInput.replace(",", "."));
+  return {
+    heightCm: height > 0 && height < 3 ? Math.round(height * 100) : height,
+    weightKg: Number(weightInput.replace(",", ".")),
+  };
+}
+
+function recommendationReason({ alternative, basis, size, usedCamera }: SizeRecommendation) {
+  if (basis === "ombros") {
+    return "Seus ombros são largos para a sua altura, então sugerimos um tamanho acima do que altura e peso indicam.";
+  }
+  if (alternative) {
+    const [smaller, larger] =
+      alternative.when === "folgado" ? [size, alternative.size] : [alternative.size, size];
+    return `Você está entre ${smaller} e ${larger}: vá de ${alternative.size} se prefere mais ${alternative.when}.`;
+  }
+  return usedCamera
+    ? "Pela sua altura, seu peso e a largura dos ombros medida pela câmera."
+    : "Pela sua altura e seu peso.";
+}
 
 // O tamanho habitual é só uma conveniência deste aparelho; sem storage, a pessoa escolhe de novo.
 function readUsualSize() {
@@ -256,6 +313,13 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const [error, setError] = useState("");
   // Aviso de fila enquanto conecta (vaga ocupada ou posição na fila da Decart).
   const [queueText, setQueueText] = useState("");
+  // Recomendação de tamanho: altura e peso informados + ombros medidos pela câmera.
+  const sizeChart = product.garment === "shoes" ? undefined : product.sizeChart;
+  const [profile, setProfile] = useState<BodyProfile | null>(null);
+  const [profileSkipped, setProfileSkipped] = useState(false);
+  const [heightInput, setHeightInput] = useState("");
+  const [weightInput, setWeightInput] = useState("");
+  const [recommendation, setRecommendation] = useState<SizeRecommendation | null>(null);
 
   const openRef = useRef(open);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -269,6 +333,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   // Cada tentativa de conexão ganha um número; a espera por vaga de uma tentativa antiga para.
   const attemptRef = useRef(0);
   const sharingRef = useRef(false);
+  const samplerRef = useRef<BodySampler | null>(null);
 
   const stopTimer = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -307,6 +372,8 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     timerRef.current = null;
     recordingRef.current?.discard();
     recordingRef.current = null;
+    samplerRef.current?.stop();
+    samplerRef.current = null;
     sessionRef.current?.close();
     sessionRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -324,6 +391,10 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       setTrySize(product.size);
       setUsualSize(readUsualSize());
       setSelectedImages([product.imageUrl]);
+      const stored = readProfile();
+      setProfile(stored);
+      setHeightInput(stored ? String(stored.heightCm) : "");
+      setWeightInput(stored ? String(stored.weightKg) : "");
       return;
     }
     teardown();
@@ -340,6 +411,8 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     setRemoteStream(null);
     setError("");
     setQueueText("");
+    setRecommendation(null);
+    setProfileSkipped(false);
   }, [open, teardown, product.size, product.imageUrl, firstPhase]);
 
   useEffect(() => teardown, [teardown]);
@@ -382,6 +455,8 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   };
 
   const openCamera = async () => {
+    // Baixa o modelo de pose enquanto a pessoa se posiciona.
+    if (sizeChart && profile) void loadBodyMeasurer().catch(() => undefined);
     setPhase("camera");
     setSkipTutorial(true);
     setError("");
@@ -427,10 +502,36 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     setPhase("sizes");
   };
 
-  const confirmSizes = () => {
-    saveUsualSize(usualSize);
+  const afterSizes = () => {
     if (skipTutorial) void openCamera();
     else setPhase("tutorial");
+  };
+
+  // Com tabela de medidas, pergunta altura e peso uma vez (fica salvo no aparelho).
+  const confirmSizes = () => {
+    saveUsualSize(usualSize);
+    if (sizeChart && !profile && !profileSkipped) setPhase("profile");
+    else afterSizes();
+  };
+
+  const draftProfile = parseProfile(heightInput, weightInput);
+
+  const confirmProfile = () => {
+    if (!isValidProfile(draftProfile)) return;
+    saveProfile(draftProfile);
+    setProfile(draftProfile);
+    afterSizes();
+  };
+
+  const skipProfile = () => {
+    setProfileSkipped(true);
+    afterSizes();
+  };
+
+  const stopSampling = () => {
+    const measurements = samplerRef.current?.stop() ?? null;
+    samplerRef.current = null;
+    return measurements;
   };
 
   const startCountdown = () => {
@@ -473,9 +574,16 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
     const attempt = ++attemptRef.current;
     setQueueText("");
     setPhase("connecting");
+    // Mede os ombros na câmera crua enquanto a pessoa fica parada na posição.
+    stopSampling();
+    samplerRef.current =
+      sizeChart && profile && localVideoRef.current
+        ? startBodySampling(localVideoRef.current, profile.heightCm)
+        : null;
     const hasSlot = await waitForSlot(attempt);
     if (attemptRef.current !== attempt) return;
     if (!hasSlot) {
+      stopSampling();
       setError("O provador está cheio agora. Tente de novo em alguns instantes.");
       setPhase("error");
       return;
@@ -504,6 +612,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
           return;
         }
         stopTimer();
+        stopSampling();
         setRemoteStream(null);
         // A conta da Decart pode ter limite de sessões simultâneas (fechamento 1013).
         setError(
@@ -549,6 +658,13 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
 
   const finish = () => {
     stopTimer();
+    const measurements = stopSampling();
+    if (sizeChart && profile) {
+      const next = recommendSize(product.garment, sizeChart, profile, measurements);
+      if (import.meta.env.DEV)
+        console.info("Recomendação de tamanho:", next, "câmera:", measurements);
+      setRecommendation(next);
+    }
     const recording = recordingRef.current;
     recordingRef.current = null;
     if (recording) {
@@ -569,6 +685,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const backToCamera = () => {
     attemptRef.current += 1;
     stopTimer();
+    stopSampling();
     discardRecording();
     closeSession();
     setPhase("camera");
@@ -577,6 +694,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
   const tryAgain = () => {
     attemptRef.current += 1;
     clearResult();
+    setRecommendation(null);
     closeSession();
     releaseCamera();
     setError("");
@@ -637,6 +755,23 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
       : "Encaixe o corpo inteiro na silhueta";
   const footerButton = "h-12 rounded-none text-sm sm:text-xs md:text-sm";
 
+  // Altera altura e peso a partir do resultado: recomeça a prova pela pergunta.
+  const editProfile = () => {
+    tryAgain();
+    setPhase("profile");
+  };
+
+  const recommendationBox = recommendation ? (
+    <div className="mb-3 border border-border p-3 text-left">
+      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Tamanho recomendado</p>
+      <p className="mt-1 text-2xl font-medium leading-none">{recommendation.size}</p>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+        {recommendationReason(recommendation)} É uma estimativa, não uma medida exata.{" "}
+        <button type="button" className="underline underline-offset-2" onClick={editProfile}>Alterar altura e peso</button>
+      </p>
+    </div>
+  ) : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-hidden border-0 p-0 sm:max-w-4xl [@media(min-height:721px)]:sm:h-[min(900px,94dvh)] sm:rounded-none sm:border lg:max-w-6xl">
@@ -657,7 +792,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                 ["tutorial", "02", "Preparação"],
                 ["camera", "03", "Prova"],
               ] as const).map(([target, number, label], index) => {
-                const currentIndex = phase === "sizes" ? 0 : phase === "tutorial" ? 1 : 2;
+                const currentIndex = phase === "sizes" || phase === "profile" ? 0 : phase === "tutorial" ? 1 : 2;
                 const active = currentIndex === index;
                 const complete = currentIndex > index;
                 return (
@@ -680,7 +815,38 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
           </div>
         </DialogHeader>
 
-        {phase === "sizes" ? (
+        {phase === "profile" ? (
+          <div key={phase} className="try-on-enter flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-8 sm:py-8">
+              <div className="mx-auto w-full max-w-md">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Opcional · Recomendação de tamanho</p>
+                <h3 className="mt-2 text-lg font-medium sm:text-2xl">Quer uma recomendação de tamanho?</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Informe sua altura e seu peso. Durante a prova, a câmera também mede a largura dos
+                  seus ombros para refinar a sugestão.
+                </p>
+                <div className="mt-6 grid grid-cols-2 gap-3">
+                  <label className="text-sm font-medium">
+                    Altura (cm)
+                    <Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="175" value={heightInput} onChange={(event) => setHeightInput(event.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Peso (kg)
+                    <Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="72" value={weightInput} onChange={(event) => setWeightInput(event.target.value)} />
+                  </label>
+                </div>
+                <p className="mt-6 flex gap-2 text-xs leading-5 text-muted-foreground">
+                  <Ruler className="size-4 shrink-0" />A medição acontece no seu aparelho: a imagem
+                  não é enviada para isso. O resultado é uma estimativa, não uma medida exata.
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-2 border-t border-border bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-8">
+              <Button type="button" variant="ghost" className="h-12 rounded-none px-5" onClick={skipProfile}>Agora não</Button>
+              <Button type="button" className="h-12 flex-1 rounded-none sm:ml-auto sm:max-w-xs" disabled={!isValidProfile(draftProfile)} onClick={confirmProfile}>Continuar <ChevronRight className="size-4" /></Button>
+            </div>
+          </div>
+        ) : phase === "sizes" ? (
           <div key={phase} className="try-on-enter flex min-h-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-8 sm:py-4 [@media(min-height:721px)]:sm:py-6">
               <div className="flex h-full min-h-0 flex-col gap-2 sm:hidden">
@@ -1057,6 +1223,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
                 e compartilhar vira a ação principal. */}
             {phase === "result" ? (
               <div className="shrink-0 border-t border-border bg-background px-6 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-5 text-center text-foreground sm:hidden">
+                {recommendationBox}
                 {error ? <p role="alert" className="mb-4 text-xs leading-5 text-destructive">{error}</p> : null}
                 {result || resultPending ? (
                   <button
@@ -1176,6 +1343,7 @@ export function VirtualTryOn({ open, product, watermark, onOpenChange }: Virtual
               ) : null}
               {phase === "result" ? (
                 <>
+                  {recommendationBox}
                   {error ? (
                     <p role="alert" className="mb-3 text-center text-xs text-destructive">
                       {error}
