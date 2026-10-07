@@ -123,17 +123,34 @@ function saveProfile(profile: BodyProfile) {
 }
 
 // Aceita "175", "1,75" ou "1.75" (metros viram centímetros).
-function parseProfile(heightInput: string, weightInput: string): Partial<BodyProfile> {
+function parseOptionalMeasurement(value: string) {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function parseProfile(
+  heightInput: string,
+  weightInput: string,
+  shoulderInput: string,
+  waistInput: string,
+): Partial<BodyProfile> {
   const height = Number(heightInput.replace(",", "."));
+  const shoulderWidthCm = parseOptionalMeasurement(shoulderInput);
+  const waistCm = parseOptionalMeasurement(waistInput);
   return {
     heightCm: height > 0 && height < 3 ? Math.round(height * 100) : height,
     weightKg: Number(weightInput.replace(",", ".")),
+    ...(shoulderWidthCm === undefined ? {} : { shoulderWidthCm }),
+    ...(waistCm === undefined ? {} : { waistCm }),
   };
 }
 
-function recommendationReason({ alternative, basis, size, usedCamera }: SizeRecommendation) {
+function recommendationReason({ alternative, basis, shoulderSource, size, usedCamera }: SizeRecommendation) {
   if (basis === "ombros") {
-    return "Seus ombros são largos para a sua altura, então sugerimos um tamanho acima do que altura e peso indicam.";
+    return shoulderSource === "manual"
+      ? "Usamos a largura dos ombros que você informou."
+      : "A câmera mediu seus ombros para definir o tamanho.";
   }
   if (alternative) {
     const [smaller, larger] =
@@ -322,6 +339,8 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
   const [profileSkipped, setProfileSkipped] = useState(false);
   const [heightInput, setHeightInput] = useState("");
   const [weightInput, setWeightInput] = useState("");
+  const [shoulderInput, setShoulderInput] = useState("");
+  const [waistInput, setWaistInput] = useState("");
   const [recommendation, setRecommendation] = useState<SizeRecommendation | null>(null);
 
   const openRef = useRef(open);
@@ -403,6 +422,8 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
       setProfile(stored);
       setHeightInput(stored ? String(stored.heightCm) : "");
       setWeightInput(stored ? String(stored.weightKg) : "");
+      setShoulderInput(stored?.shoulderWidthCm === undefined ? "" : String(stored.shoulderWidthCm));
+      setWaistInput(stored?.waistCm === undefined ? "" : String(stored.waistCm));
       return;
     }
     teardown();
@@ -433,7 +454,7 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
       video.srcObject = stream;
       void video.play().catch(() => undefined);
     }
-    if (sizeChart && profile && !samplerRef.current) {
+    if (sizeChart && profile && profile.shoulderWidthCm === undefined && !samplerRef.current) {
       // Começa a medir assim que a prévia da câmera está disponível, dando
       // tempo para coletar quadros enquanto a pessoa se posiciona.
       samplerRef.current = startBodySampling(video, profile.heightCm);
@@ -470,7 +491,8 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
 
   const openCamera = async () => {
     // Baixa o modelo de pose enquanto a pessoa se posiciona.
-    if (sizeChart && profile) void loadBodyMeasurer().catch(() => undefined);
+    if (sizeChart && profile && profile.shoulderWidthCm === undefined)
+      void loadBodyMeasurer().catch(() => undefined);
     setPhase("camera");
     setSkipTutorial(true);
     setError("");
@@ -522,14 +544,14 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
     else setPhase("tutorial");
   };
 
-  // Com tabela de medidas, pergunta altura e peso uma vez (fica salvo no aparelho).
+  // Com tabela de medidas, mostra o perfil após escolher a peça; os dados salvos vêm preenchidos.
   const confirmSizes = () => {
     saveUsualSize(usualSize);
-    if (sizeChart && !profile && !profileSkipped) setPhase("profile");
+    if (sizeChart && !profileSkipped) setPhase("profile");
     else afterSizes();
   };
 
-  const draftProfile = parseProfile(heightInput, weightInput);
+  const draftProfile = parseProfile(heightInput, weightInput, shoulderInput, waistInput);
 
   const confirmProfile = () => {
     if (!isValidProfile(draftProfile)) return;
@@ -805,13 +827,19 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
               : "Não medidos"}
           </p>
           <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-            {recommendation.usedCamera ? "Medidos pela câmera" : "Câmera não conseguiu medir"}
+            {recommendation.shoulderSource === "manual"
+              ? "Informados por você"
+              : recommendation.shoulderSource === "camera"
+                ? "Medidos pela câmera"
+                : "Câmera não conseguiu medir"}
           </p>
         </div>
         <div className="border border-border bg-muted/30 px-3 py-2">
           <p className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Cintura</p>
           <p className="mt-1 text-lg font-semibold leading-none">{recommendation.estimates.waistCm.toFixed(1)} cm</p>
-          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">Estimativa por altura e peso</p>
+          <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+            {recommendation.waistSource === "manual" ? "Informada por você" : "Estimativa por altura e peso"}
+          </p>
         </div>
       </div>
     </div>
@@ -867,8 +895,9 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                 <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Opcional · Recomendação de tamanho</p>
                 <h3 className="mt-2 text-lg font-medium sm:text-2xl">Quer uma recomendação de tamanho?</h3>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Informe sua altura e seu peso. Durante a prova, a câmera também mede a largura dos
-                  seus ombros para refinar a sugestão.
+                  Altura e peso são necessários. Ombros e cintura são opcionais; quando informados,
+                  serão usados diretamente. Sem a medida dos ombros, a câmera tenta capturá-los.
+                  Sem cintura informada, usamos a estimativa por altura e peso.
                 </p>
                 <div className="mt-6 grid grid-cols-2 gap-3">
                   <label className="text-sm font-medium">
@@ -878,6 +907,14 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                   <label className="text-sm font-medium">
                     Peso (kg)
                     <Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="72" value={weightInput} onChange={(event) => setWeightInput(event.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Largura dos ombros (cm)
+                    <Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="52" value={shoulderInput} onChange={(event) => setShoulderInput(event.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium">
+                    Cintura (cm)
+                    <Input className="mt-2 h-12 rounded-none" inputMode="decimal" placeholder="88" value={waistInput} onChange={(event) => setWaistInput(event.target.value)} />
                   </label>
                 </div>
                 <p className="mt-6 flex gap-2 text-xs leading-5 text-muted-foreground">

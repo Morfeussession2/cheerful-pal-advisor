@@ -9,6 +9,10 @@ import type { GarmentKind } from "@/lib/try-on-prompt";
 export interface BodyProfile {
   heightCm: number;
   weightKg: number;
+  /** Medida informada pela pessoa; prevalece sobre a leitura da câmera. */
+  shoulderWidthCm?: number | undefined;
+  /** Medida informada pela pessoa; prevalece sobre a estimativa por altura/peso. */
+  waistCm?: number | undefined;
 }
 
 /** Medidas tiradas pela câmera (veja body-measure.ts). */
@@ -38,6 +42,8 @@ export interface SizeRecommendation {
   basis: "torax" | "cintura" | "ombros";
   /** A câmera mediu a pessoa (mesmo que não tenha mudado o tamanho). */
   usedCamera: boolean;
+  shoulderSource: "manual" | "camera" | "unavailable";
+  waistSource: "manual" | "height-weight";
   /** Estimativas usadas, para diagnóstico e calibração. */
   estimates: { chestCm?: number | undefined; waistCm: number; shoulderCm?: number | undefined };
 }
@@ -67,7 +73,13 @@ export function isValidProfile(profile: Partial<BodyProfile> | null): profile is
     profile.heightCm >= 140 &&
     profile.heightCm <= 215 &&
     profile.weightKg >= 40 &&
-    profile.weightKg <= 180
+    profile.weightKg <= 180 &&
+    (profile.shoulderWidthCm === undefined ||
+      (Number.isFinite(profile.shoulderWidthCm) &&
+        profile.shoulderWidthCm >= 20 &&
+        profile.shoulderWidthCm <= 80)) &&
+    (profile.waistCm === undefined ||
+      (Number.isFinite(profile.waistCm) && profile.waistCm >= 40 && profile.waistCm <= 200))
   );
 }
 
@@ -112,9 +124,16 @@ export function recommendSize(
   if (garment === "shoes" || chart.length === 0) return null;
 
   const rows = [...chart];
-  const waistCm = estimateWaist(profile);
-  const shoulderCm = camera?.shoulderWidthCm;
-  const usedCamera = shoulderCm !== undefined;
+  const waistCm = profile.waistCm ?? estimateWaist(profile);
+  const shoulderCm = profile.shoulderWidthCm ?? camera?.shoulderWidthCm;
+  const shoulderSource =
+    profile.shoulderWidthCm !== undefined
+      ? "manual"
+      : shoulderCm !== undefined
+        ? "camera"
+        : "unavailable";
+  const waistSource = profile.waistCm !== undefined ? "manual" : "height-weight";
+  const usedCamera = shoulderSource === "camera";
   const waistIndex = sizeIndexFor(rows, "waistMaxCm", waistCm);
 
   // Grades da Spelho usam limites de ombro e cintura; nesse caso não usamos
@@ -129,6 +148,8 @@ export function recommendSize(
       ...withAlternative(rows, index, basis === "ombros" ? "shoulderMaxCm" : "waistMaxCm", measure),
       basis,
       usedCamera,
+      shoulderSource,
+      waistSource,
       estimates: { waistCm, shoulderCm },
     };
   }
@@ -142,6 +163,8 @@ export function recommendSize(
       ...withAlternative(rows, waistIndex, "waistMaxCm", waistCm),
       basis: "cintura",
       usedCamera,
+      shoulderSource,
+      waistSource,
       estimates,
     };
   }
@@ -157,7 +180,14 @@ export function recommendSize(
     shoulderCm > profile.heightCm * BROAD_SHOULDERS_TO_HEIGHT &&
     index < rows.length - 1
   ) {
-    return { size: rows[index + 1]!.size, basis: "ombros", usedCamera, estimates };
+    return {
+      size: rows[index + 1]!.size,
+      basis: "ombros",
+      usedCamera,
+      shoulderSource,
+      waistSource,
+      estimates,
+    };
   }
 
   return {
@@ -169,6 +199,8 @@ export function recommendSize(
     ),
     basis,
     usedCamera,
+    shoulderSource,
+    waistSource,
     estimates,
   };
 }
