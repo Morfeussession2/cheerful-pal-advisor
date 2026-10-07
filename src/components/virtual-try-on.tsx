@@ -753,10 +753,20 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
 
   // Abre a folha de compartilhamento do aparelho (WhatsApp, Instagram, "Salvar vídeo"…).
   // O iOS só aceita navigator.share disparado direto pelo toque: nada de await antes dele.
-  const shareResult = async () => {
+  const shareResult = async (preferNative = false) => {
     if (!result || sharingRef.current) return;
-    if (!canShareFile(result.file)) {
+    // Em celulares, tente sempre abrir o compartilhamento do sistema. O Safari
+    // pode rejeitar canShare(files) mesmo quando navigator.share funciona.
+    if (!preferNative && !canShareFile(result.file)) {
       downloadResult();
+      return;
+    }
+    if (typeof navigator.share !== "function") {
+      if (preferNative && isIOS()) {
+        setShareFeedback("O compartilhamento de vídeo não está disponível neste navegador. Abra esta página no Safari para usar o menu do iPhone.");
+      } else {
+        downloadResult();
+      }
       return;
     }
     sharingRef.current = true;
@@ -767,7 +777,11 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
       // AbortError: a pessoa fechou a folha sem escolher um destino.
       if (!(shareError instanceof DOMException && shareError.name === "AbortError")) {
         console.error("Compartilhar vídeo:", shareError);
-        downloadResult();
+        if (preferNative && isIOS()) {
+          setShareFeedback("Não foi possível compartilhar o vídeo. Tente novamente pelo botão Compartilhar.");
+        } else {
+          downloadResult();
+        }
       }
     } finally {
       sharingRef.current = false;
@@ -1311,14 +1325,14 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                   <button
                     type="button"
                     disabled={!result}
-                    onClick={canShareResult ? () => void shareResult() : downloadResult}
+                    onClick={() => void shareResult(touch)}
                     className="mx-auto flex h-14 w-full max-w-72 items-center justify-center gap-2 border border-foreground text-sm font-bold uppercase tracking-[0.2em] transition-colors active:bg-foreground active:text-background disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-foreground"
                   >
                     {result ? null : <LoaderCircle className="size-4 animate-spin" />}
-                    {result && !canShareResult ? "Baixar vídeo" : "Compartilhar"}
+                    {result && !touch && !canShareResult ? "Baixar vídeo" : "Compartilhar"}
                   </button>
                 ) : null}
-                {result && canShareResult ? (
+                {result ? (
                   <button
                     type="button"
                     onClick={downloadResult}
