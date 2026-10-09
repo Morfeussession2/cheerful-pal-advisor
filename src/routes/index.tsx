@@ -1,14 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { MockupSelector } from "@/components/mockup-selector";
+import { SpelhoStorefront } from "@/components/spelho-storefront";
 
 export const Route = createFileRoute("/")({
-  component: MockupSelector,
+  component: SpelhoStorefront,
   head: () => ({
     meta: [
-      { title: "Provador Virtual | Escolha sua marca" },
-      { name: "description", content: "Escolha entre as experiências de provador virtual Reserva e Spelho." },
-      { property: "og:title", content: "Provador Virtual | Escolha sua marca" },
-      { property: "og:description", content: "Escolha entre as experiências de provador virtual Reserva e Spelho." },
+      { title: "Spelho | Provador Virtual" },
+      { name: "description", content: "Conheça a experiência de provador virtual da Spelho." },
+      { property: "og:title", content: "Spelho | Provador Virtual" },
+      { property: "og:description", content: "Conheça a experiência de provador virtual da Spelho." },
       { property: "og:type", content: "website" },
       { property: "og:url", content: "/" },
       { name: "twitter:card", content: "summary_large_image" },

@@ -1,7 +1,9 @@
-const RESERVA_LOGO =
+/* const RESERVA_LOGO =
   "https://lojausereserva.vtexassets.com/assets/vtex.file-manager-graphql/images/3517f907-b0fa-497e-9c9e-d983f2fb24fc___4fa9c06b65acc2308dc375dfe0cd8778.svg";
+*/
 
 const mockups = [
+  /* Reserva fica desativada enquanto a entrada principal estiver focada na Spelho.
   {
     name: "Reserva",
     description: "Entre na experiência Reserva e explore o provador virtual.",
@@ -11,6 +13,7 @@ const mockups = [
     className: "bg-[#f3f1ec] text-[#151515]",
     logoClassName: "h-10 w-52",
   },
+  */
   {
     name: "Spelho",
     description: "Explore novas peças e experimente virtualmente com a Spelho.",

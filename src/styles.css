@@ -2,6 +2,22 @@
 @source "../src";
 @import "tw-animate-css";
 
+@font-face {
+  font-family: "neue_helvetica_condensed_bqRg";
+  src: url("/fonts/NeueHelveticaCondensedBQ-Regular.otf") format("opentype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "neue_helvetica_condensed_bqRg";
+  src: url("/fonts/NeueHelveticaCondensedBQBold.otf") format("opentype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /*
@@ -172,6 +188,118 @@
 
 .try-on-enter {
   animation: try-on-enter 240ms ease-out both;
+}
+
+.pagina-categoria #listagemProdutos.listagem .listagem-item {
+  margin: 0 0 30px 0;
+}
+
+.listagem-item .produto-sobrepor {
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  background-color: rgba(255, 255, 255, 0);
+  pointer-events: none;
+}
+
+.info-produto {
+  margin: 0;
+  padding: 15px 5px 10px;
+  position: relative;
+  min-height: 80px;
+  color: #000;
+  font-size: 12px;
+  line-height: normal;
+  text-align: left;
+  text-transform: uppercase;
+  font-weight: normal;
+  user-select: none;
+  list-style-type: none;
+  border-color: rgba(0, 0, 0, 0.13);
+}
+
+.info-produto,
+.nome-produto,
+.preco-parcela,
+.preco-promocional,
+.desconto-a-vista {
+  font-family: 'neue_helvetica_condensed_bqRg', 'Arial Narrow', Arial, sans-serif;
+}
+
+.cn-cores {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.cn-cores ul {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cn-cores li {
+  width: 27px;
+  height: 27px;
+  border: 1px solid rgb(0 0 0 / 45%);
+}
+
+.nome-produto {
+  display: block;
+  margin-bottom: 5px;
+  color: inherit;
+  font-size: 15px;
+  line-height: normal;
+  text-decoration: none;
+}
+
+.nome-produto:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.preco-produto {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.preco-parcela {
+  font-size: 14px;
+}
+
+.preco-parcela strong {
+  font-weight: 700;
+}
+
+.preco-produto strong.titulo {
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.preco-promocional {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.desconto-a-vista {
+  font-size: 12px;
+  line-height: normal;
+}
+
+.desconto-a-vista strong {
+  font-weight: 700;
+}
+
+.hide {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

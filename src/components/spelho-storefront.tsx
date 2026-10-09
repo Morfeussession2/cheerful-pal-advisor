@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft, ArrowUpRight, Check, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import { VirtualTryOn, type TryOnProduct } from "@/components/virtual-try-on";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,8 @@ import type { SizeChartRow } from "@/lib/size-recommendation";
 import type { Watermark } from "@/lib/video-recording";
 
 const SPELHO_LOGO = "/Spelhosvg_Prancheta%201.svg";
+const CICLO_LOGO_ICON = "https://cdn.awsli.com.br/400x300/2557/2557100/logo/200x200-logo-02-odthvc.png";
+const CICLO_LOGO_WORDMARK = "https://cdn.awsli.com.br/2557/2557100/arquivos/logo-cicloarte.png";
 const SIZES = ["P", "M", "G", "GG"] as const;
 // A tabela da peça é medida na largura. Convertemos ombro e barra para largura
 // total/circunferência para comparar com ombros da câmera e cintura estimada.
@@ -24,56 +26,96 @@ const SPELHO_WATERMARK: Watermark = {
 interface SpelhoProduct extends TryOnProduct {
   id: string;
   details: string;
+  productUrl: string;
+  sku: string;
+  catalogProductCode: string;
+  installmentCount: number;
+  installmentAmount: string;
+  price: string;
+  sellPrice: string;
+  pixPrice: string;
+  swatchColor: string;
+  swatchLabel: string;
 }
 
 const PRODUCTS: SpelhoProduct[] = [
   {
     id: "t-shirt-neo-bxd",
-    name: "T-Shirt Oversized NEO BXD",
+    name: "T-SHIRT OVERSIZED NEO BXD",
+    productUrl: "https://www.ciclodaarte.com.br/t-shirt-oversized-neo-bxd",
+    sku: "1012024562589508776",
+    catalogProductCode: "374477028",
     imageUrl:
       "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/374477028/30-l6qsqczlh0.png",
     imageUrls: [
-      "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/374477028/30-l6qsqczlh0.png",
+      "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/374477028/35-k5ixyzewwt.png",
     ],
     garment: "top",
     description:
       "Off-white heavyweight cotton T-shirt with a colorful photo-and-graffiti print, ribbed crew neck, dropped shoulders and broad hems. The reference model wears size GG.",
     details:
       "Uma camiseta que não fica tentando desaparecer no look. A T-Shirt Oversized NEO BXD combina a identidade do artista com uma forma ampla e estruturada. Confeccionada em malha 30 fios, tem modelagem quadrada e ampla, bainhas largas e rib canelada de 2,5 cm. O processo de amaciamento e pré-encolhimento garante toque suave e caimento impecável. Composição: 100% algodão. O modelo tem 1,87 m de altura e veste GG.",
+    installmentCount: 6,
+    installmentAmount: "R$ 30,83",
+    price: "R$ 185,00",
+    sellPrice: "185.00",
+    pixPrice: "R$ 175,75",
+    swatchColor: "#FFFFFF",
+    swatchLabel: "Off-white",
     sizes: SIZES,
     sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
     id: "regata-boxy-texturizada",
-    name: "Regata Boxy Texturizada",
+    name: "REGATA BOXY LISTRAS GISLONS",
+    productUrl: "https://www.ciclodaarte.com.br/regata-boxy-listras-gislons",
+    sku: "1012024562589509246",
+    catalogProductCode: "400734281",
     imageUrl:
       "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/400734281/9c888909707649ec83f6af79c4fe9ee1-kgmmenxlp7.jpg",
     imageUrls: [
-      "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/400734281/9c888909707649ec83f6af79c4fe9ee1-kgmmenxlp7.jpg",
+      "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/400734281/6fd47f69ea0f46efbc5f1f6a2e55cb0e-5pja0rlxl7.jpg",
     ],
     garment: "top",
     description:
       "color: beige and off-white horizontal stripes; material: smooth cotton jersey knit; texture: soft, clean, matte surface with minimal visible grain; proportions: regular-length body with wide shoulder coverage and large arm openings; fit: relaxed, boxy sleeveless fit; construction details: crew ribbed neckline, evenly spaced horizontal stripes, clean hem finishing, and a small embroidered logo near the lower hem.",
     details:
       "Regata confeccionada em malha texturizada, com modelagem boxy, comprimento abaixo da cintura, gola canelada de 2,5 cm e cavas amplas cortadas a fio. Composição: 67% algodão, 29% poliéster e 4% elastano. O tecido garante toque suave e caimento impecável.",
+    installmentCount: 6,
+    installmentAmount: "R$ 30,83",
+    price: "R$ 185,00",
+    sellPrice: "185.00",
+    pixPrice: "R$ 175,75",
+    swatchColor: "#C3B091",
+    swatchLabel: "Areia e off-white",
     sizes: SIZES,
     sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
     id: "camiseta-oversized-encorpada",
-    name: "Camiseta Oversized Encorpada",
+    name: "T-SHIRT OVERSIZED BOXY",
+    productUrl: "https://www.ciclodaarte.com.br/t-shirt-oversized-boxy",
+    sku: "1012024562589508015",
+    catalogProductCode: "343496999",
     imageUrl:
       "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/343496999/foto-1-2zdyse0bc4.jpg",
     imageUrls: [
-      "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/343496999/foto-1-2zdyse0bc4.jpg",
+      "https://cdn.awsli.com.br/2500x2500/2557/2557100/produto/343496999/foto-2-fomi1tgtv5.jpg",
     ],
     garment: "top",
     description:
       "color: solid off-white / ivory; material: heavyweight cotton jersey; texture: dense, structured, low-stretch fabric; proportions: oversized, boxy silhouette with dropped shoulders; fit: loose oversized fit; construction details: ribbed crew neck, minimalist design, thick fabric that holds its shape and is not very flexible.",
     details:
       "A forma levemente quadrada cria estrutura sem prender o movimento. Confeccionada em malhão encorpado, tem modelagem quadrada e ampla, bainhas largas e rib canelada de 2,5 cm. O processo de amaciamento e pré-encolhimento garante toque suave e caimento impecável. Composição: 100% algodão, com gramatura acima de 280 g/m². O modelo tem 1,85 m de altura e veste G.",
+    installmentCount: 6,
+    installmentAmount: "R$ 24,16",
+    price: "R$ 145,00",
+    sellPrice: "145.00",
+    pixPrice: "R$ 137,75",
+    swatchColor: "#FFFFFF",
+    swatchLabel: "Off-white",
     sizes: SIZES,
     sizeChart: SPELHO_SIZE_CHART,
     size: "M",
@@ -81,30 +123,28 @@ const PRODUCTS: SpelhoProduct[] = [
 ];
 
 export function SpelhoStorefront() {
-  const [selectedSizes, setSelectedSizes] = useState<Record<string, string>>({});
   const [activeProduct, setActiveProduct] = useState<TryOnProduct | null>(null);
   const [tryOnOpen, setTryOnOpen] = useState(false);
 
   function startTryOn(product: SpelhoProduct) {
-    const size = selectedSizes[product.id];
-    if (!size) return;
-    setActiveProduct({ ...product, size });
+    setActiveProduct(product);
     setTryOnOpen(true);
   }
 
   return (
-    <main className="min-h-svh bg-white text-black selection:bg-black selection:text-white">
-      <header className="relative z-10 border-b border-black/10 bg-white">
-        <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-between px-5 sm:px-8">
-          <a href="/" className="inline-flex items-center gap-2 text-xs text-black/65 transition hover:text-black">
-            <ArrowLeft className="size-4" /> Marcas
-          </a>
-          <img src={SPELHO_LOGO} alt="Spelho" className="h-9 w-36 object-contain" />
+    <main className="pagina-categoria min-h-svh bg-white text-black selection:bg-black selection:text-white">
+      <header className="relative z-10 bg-black text-white ">
+        <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-center gap-5 px-5 sm:h-[88px] sm:gap-7 sm:px-8">
+          <img src={SPELHO_LOGO} alt="Spelho" className="h-8 w-28 object-contain brightness-0 invert sm:h-10" />
+          <span aria-hidden="true" className="h-8 w-px bg-white/30 sm:h-10" />
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <img src={CICLO_LOGO_ICON} alt="" aria-hidden="true" className="h-32 w-32 shrink-0 object-contain brightness-0 invert" />
+          </div>
         </div>
       </header>
 
       <section className="relative mx-auto max-w-7xl px-5 pb-16 pt-12 sm:px-8 sm:pb-24 sm:pt-20">
-        <div className="mb-9 flex flex-col justify-between gap-5 sm:mb-12 sm:flex-row sm:items-end">
+        <div className="mb-7 flex flex-col justify-between gap-5 border-b border-black/10 pb-5 sm:mb-9 sm:flex-row sm:items-end sm:pb-6">
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-black/55">Vista do seu jeito</p>
             <h1 className="mt-3 text-3xl font-light tracking-tight sm:text-5xl">Peças para experimentar</h1>
@@ -112,42 +152,64 @@ export function SpelhoStorefront() {
           <p className="max-w-sm text-sm leading-6 text-black/60">Escolha o tamanho e veja como cada peça pode ficar em você, no provador virtual Spelho.</p>
         </div>
 
-        <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {PRODUCTS.map((product, index) => {
-            const selectedSize = selectedSizes[product.id];
+        <div id="listagemProdutos" className="listagem grid grid-cols-2 gap-x-3 gap-y-0 sm:gap-x-5 lg:grid-cols-3 lg:gap-x-7">
+          {PRODUCTS.map((product) => {
+            const alternateImage = product.imageUrls?.find((url) => url !== product.imageUrl);
             return (
-              <article key={product.id} className="group overflow-hidden rounded-[26px] border border-black/10 bg-white shadow-[0_8px_24px_rgba(0,0,0,0.06)] transition duration-300 hover:-translate-y-1 hover:border-black/25 hover:shadow-[0_14px_32px_rgba(0,0,0,0.1)]">
-                <div className="relative aspect-[4/4.6] overflow-hidden bg-[#e9e7e0] p-4 sm:p-6">
-                  <span className="absolute left-5 top-5 z-[1] rounded-full border border-black/10 bg-white px-3 py-1.5 text-[9px] uppercase tracking-[0.2em] text-black/65">0{index + 1} · Spelho</span>
-                  <img src={product.imageUrl} alt={product.name} loading="lazy" className="size-full object-contain transition duration-500 group-hover:scale-[1.025]" />
+              <article key={product.id} className="listagem-item group relative min-w-0 border-2 border-transparent bg-white p-2.5 transition-colors duration-200 hover:border-black">
+                <div className="produto-sobrepor" aria-hidden="true" />
+                <div className="relative aspect-[7/10] overflow-hidden bg-[#f4f3f0]">
+                  <img src={product.imageUrl} alt={product.name} loading="lazy" className="size-full object-cover transition duration-500 group-hover:scale-[1.025] group-hover:opacity-0" />
+                  {alternateImage ? (
+                    <img
+                      src={alternateImage}
+                      alt={`${product.name}, outra vista`}
+                      loading="lazy"
+                      onError={(event) => {
+                        event.currentTarget.src = product.imageUrl;
+                      }}
+                      className="absolute inset-0 size-full object-cover opacity-0 transition duration-500 group-hover:scale-[1.025] group-hover:opacity-100"
+                    />
+                  ) : null}
                 </div>
-                <div className="p-5 sm:p-6">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h2 className="text-lg font-medium tracking-tight">{product.name}</h2>
-                      <p className="mt-2 line-clamp-3 text-xs leading-5 text-black/60">{product.details}</p>
+                <div className="info-produto">
+                  <div className="cn-cores">
+                    <ul>
+                      <li
+                        role="img"
+                        aria-label={`Cor: ${product.swatchLabel}`}
+                        title={product.swatchLabel}
+                        style={{ background: product.swatchColor }}
+                      />
+                    </ul>
+                  </div>
+                  <a className="nome-produto cor-secundaria" href={product.productUrl} target="_blank" rel="noreferrer">
+                    {product.name}
+                  </a>
+                  <div className="produto-sku hide">{product.sku}</div>
+                  <div data-trustvox-product-code={product.catalogProductCode} className="hide trustvox-stars" />
+                  <div>
+                    <div className="preco-produto destaque-parcela">
+                      <div>
+                        <span className="preco-parcela cor-principal">
+                          <strong>{product.installmentCount}x</strong> de <strong className="cor-principal titulo">{product.installmentAmount}</strong>
+                        </span>
+                      </div>
+                      <div style={{ marginTop: "3px" }}>
+                        <strong className="preco-promocional cor-principal" data-sell-price={product.sellPrice}>
+                          {product.price}
+                        </strong>
+                      </div>
+                      <span className="desconto-a-vista">
+                        ou <strong className="cor-secundaria">{product.pixPrice}</strong> via Pix
+                      </span>
                     </div>
-                    <ArrowUpRight aria-hidden="true" className="mt-1 size-4 shrink-0 text-black/40" />
                   </div>
 
-                  <fieldset className="mt-5">
-                    <legend className="mb-2.5 text-[9px] uppercase tracking-[0.2em] text-black/55">Selecione seu tamanho</legend>
-                    <div className="flex flex-wrap gap-2">
-                      {SIZES.map((size) => {
-                        const isSelected = selectedSize === size;
-                        return (
-                          <button key={size} type="button" aria-pressed={isSelected} onClick={() => setSelectedSizes((current) => ({ ...current, [product.id]: size }))} className={`grid size-10 place-items-center rounded-full border text-xs transition duration-200 ${isSelected ? "border-black bg-black text-white" : "border-black/20 bg-white text-black/75 hover:border-black/60 hover:bg-black/[0.03]"}`}>
-                            {isSelected ? <span className="inline-flex items-center gap-0.5"><Check className="size-3" />{size}</span> : size}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </fieldset>
-
-                  <Button type="button" disabled={!selectedSize} onClick={() => startTryOn(product)} className="mt-5 h-12 w-full rounded-full bg-black text-xs font-medium text-white shadow-none hover:bg-black/80 disabled:bg-black/10 disabled:text-black/35">
-                    <Sparkles className="size-4" /> Experimentar virtualmente
-                  </Button>
                 </div>
+                <Button type="button" onClick={() => startTryOn(product)} className="mt-3 h-10 w-full rounded-none bg-black px-2 text-[9px] font-medium uppercase tracking-[0.08em] text-white shadow-none hover:bg-black/80 sm:h-11 sm:text-[10px] sm:tracking-[0.12em]">
+                  <Sparkles className="size-3.5 shrink-0 sm:size-4" /> Experimentar
+                </Button>
               </article>
             );
           })}
