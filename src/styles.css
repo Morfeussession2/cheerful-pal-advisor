@@ -302,6 +302,17 @@
   display: none;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .spelho-product-detail-image img {
+    transform-origin: var(--zoom-x, 50%) var(--zoom-y, 50%);
+    transition: transform 500ms ease;
+  }
+
+  .spelho-product-detail-image:hover img {
+    transform: scale(1.28);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

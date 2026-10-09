@@ -3,22 +3,24 @@
 // detalhes — recomendação do Decart) e o que deve continuar igual.
 // Os prompts ficam em inglês porque é o idioma em que o modelo foi treinado.
 
-export type GarmentKind = "top" | "bottom" | "shoes";
+export type GarmentKind = "top" | "bottom" | "shoes" | "headwear";
 
 const TARGET: Record<GarmentKind, string> = {
   top: "the person's current top",
   bottom: "the person's current pants or shorts",
   shoes: "the person's current shoes",
+  headwear: "the person's current hat or headwear",
 };
 
 const GARMENT_NOUN: Record<GarmentKind, string> = {
   top: "the outfit",
   bottom: "the bottoms",
   shoes: "the footwear",
+  headwear: "the headwear",
 };
 
 // Como o caimento aparece em cada região do corpo, do mais apertado ao mais largo.
-const FIT_DETAILS: Record<Exclude<GarmentKind, "shoes">, [string, string, string, string]> = {
+const FIT_DETAILS: Record<Exclude<GarmentKind, "shoes" | "headwear">, [string, string, string, string]> = {
   top: [
     "stretched across the chest and shoulders, with sleeves and hem visibly too short",
     "close to the body, with slightly shorter sleeves",
@@ -35,7 +37,7 @@ const FIT_DETAILS: Record<Exclude<GarmentKind, "shoes">, [string, string, string
 
 // Simulação aproximada: o modelo não mede o corpo, só desenha o caimento descrito.
 function fitSentence(garment: GarmentKind, sizeOffset: number) {
-  if (garment === "shoes") return "";
+  if (garment === "shoes" || garment === "headwear") return "";
   const [tighter, snug, loose, looser] = FIT_DETAILS[garment];
   if (sizeOffset <= -2)
     return `The garment is two or more sizes smaller than the person's reference size: very tight, ${tighter}.`;

@@ -303,12 +303,13 @@ function StageMessage({ children }: { children: ReactNode }) {
 }
 
 export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOpenChange }: VirtualTryOnProps) {
-  const framing: TryOnFraming = product.garment === "top" ? "upper" : "full";
+  const framing: TryOnFraming = product.garment === "top" || product.garment === "headwear" ? "upper" : "full";
   const touch = useTouchDevice();
   const steps = tutorialSteps(framing, touch);
   const press = touch ? "tocar" : "clicar";
   // Calçados não usam a grade P–GGG, então não há simulação de caimento.
-  const simulatesFit = product.garment !== "shoes";
+  const simulatesFit = product.garment !== "shoes" && product.garment !== "headwear";
+  const sizeChoiceLabel = product.garment === "shoes" ? "Numeração do calçado" : product.garment === "headwear" ? "Tamanho do boné" : "Tamanho para experimentar";
   const gallery = [product.imageUrl, ...(product.imageUrls ?? [])].filter(
     (url, index, all) => all.indexOf(url) === index,
   );
@@ -318,6 +319,7 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
   const [phase, setPhase] = useState<Phase>(firstPhase);
   const [tutorialStep, setTutorialStep] = useState(0);
   const [selectedImages, setSelectedImages] = useState<string[]>([product.imageUrl]);
+  const galleryStripRef = useRef<HTMLDivElement>(null);
   const [trySize, setTrySize] = useState(product.size);
   const [usualSize, setUsualSize] = useState<string | null>(null);
   // Depois que a câmera abriu uma vez, voltar dos tamanhos vai direto para ela.
@@ -334,7 +336,7 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
   // Aviso de fila enquanto conecta (vaga ocupada ou posição na fila da Decart).
   const [queueText, setQueueText] = useState("");
   // Recomendação de tamanho: altura e peso informados + ombros medidos pela câmera.
-  const sizeChart = product.garment === "shoes" ? undefined : product.sizeChart;
+  const sizeChart = product.garment === "shoes" || product.garment === "headwear" ? undefined : product.sizeChart;
   const [profile, setProfile] = useState<BodyProfile | null>(null);
   const [profileSkipped, setProfileSkipped] = useState(false);
   const [heightInput, setHeightInput] = useState("");
@@ -966,21 +968,7 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                     className="absolute inset-0 size-full object-contain"
                   />
                   <div className="absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/50 to-transparent px-3 pb-3 pt-10 text-white">
-                    <span className="text-[10px] uppercase tracking-[0.16em]">{hasGallery ? `${activeImageIndex + 1} / ${gallery.length} fotos` : "Sua peça"}</span>
-                    {hasGallery ? (
-                      <div className="flex items-center gap-1.5" aria-label="Selecionar foto da peça">
-                        {gallery.map((imageUrl, index) => (
-                          <button
-                            key={imageUrl}
-                            type="button"
-                            aria-label={`Mostrar foto ${index + 1}`}
-                            aria-pressed={index === activeImageIndex}
-                            onClick={() => toggleImage(imageUrl)}
-                            className={`size-2 rounded-full ring-1 ring-white/80 transition ${index === activeImageIndex ? "bg-white" : "bg-white/30"}`}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
+                    <span className="text-[10px] uppercase tracking-[0.16em]">{hasGallery ? `Foto ${activeImageIndex + 1} de ${gallery.length}` : "Sua peça"}</span>
                   </div>
                   {hasGallery ? (
                     <>
@@ -1004,13 +992,13 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                   </div>
                 ) : (
                   <div className="shrink-0 border border-border bg-background p-2">
-                    <SizeOptions compact label="Numeração do calçado" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
+                    <SizeOptions compact label={sizeChoiceLabel} sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
                   </div>
                 )}
               </div>
               {/* Desktop: tudo cabe na altura do popup. Os textos de apoio só aparecem em telas
                   altas, e a coluna da direita só rola em telas muito baixas. */}
-              <div className="hidden h-full min-h-0 grid-cols-[minmax(220px,0.85fr)_1.15fr] grid-rows-[minmax(0,1fr)] gap-10 sm:grid lg:grid-cols-[1.15fr_0.85fr] lg:gap-12">
+              <div className="hidden h-full min-h-0 min-w-0 grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] grid-rows-[minmax(0,1fr)] gap-5 sm:grid lg:grid-cols-[1.15fr_0.85fr] lg:gap-12">
                 <div className="relative min-h-0 overflow-hidden bg-muted">
                   <img src={selectedImages[0] ?? product.imageUrl} alt={`Foto selecionada de ${product.name}`} className="absolute inset-0 size-full object-cover transition-opacity duration-300 sm:object-contain" />
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-4 pt-16 text-white sm:p-5 sm:pt-24">
@@ -1029,24 +1017,33 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                     </div>
                   ) : null}
                 </div>
-                <div className="min-h-0 min-w-0 overflow-y-auto">
+                <div className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto">
                   <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Passo 1 · Personalize sua prova</p>
-                  <h3 className="mt-2 text-2xl font-medium">{simulatesFit ? "Escolha tamanho e foto" : "Escolha numeração e foto"}</h3>
-                  <p className="mt-2 hidden text-sm leading-6 text-muted-foreground [@media(min-height:820px)]:block">{simulatesFit ? "Selecione o tamanho e a foto da peça que quer experimentar." : "Escolha o número e a foto da peça para sua prova."}</p>
+                  <h3 className="mt-2 text-2xl font-medium">{simulatesFit ? "Escolha tamanho e foto" : product.garment === "headwear" ? "Escolha tamanho e foto" : "Escolha numeração e foto"}</h3>
+                  <p className="mt-2 hidden text-sm leading-6 text-muted-foreground [@media(min-height:820px)]:block">{simulatesFit ? "Selecione o tamanho e a foto da peça que quer experimentar." : product.garment === "headwear" ? "Escolha o tamanho do boné e a foto da peça para sua prova." : "Escolha o número e a foto da peça para sua prova."}</p>
                   {hasGallery ? (
-                    <fieldset className="mt-5">
+                    <fieldset className="mt-5 min-w-0 max-w-full">
                       <legend className="flex w-full items-end justify-between gap-3 text-sm font-medium">Foto da peça <span className="text-[10px] font-normal uppercase tracking-[0.14em] text-muted-foreground">Selecione uma</span></legend>
                       <p className="mt-1 hidden text-xs text-muted-foreground [@media(min-height:820px)]:block">Escolha o ângulo que será usado na prova virtual.</p>
-                      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                        {gallery.map((imageUrl, index) => {
+                      <div className="mt-3 flex w-full min-w-0 max-w-full items-center gap-2">
+                        <button type="button" aria-label="Rolar fotos para a esquerda" onClick={() => galleryStripRef.current?.scrollBy({ left: -180, behavior: "smooth" })} className="grid size-8 shrink-0 place-items-center border border-border transition hover:bg-muted">
+                          <ChevronLeft className="size-4" />
+                        </button>
+                        <div ref={galleryStripRef} className="flex min-w-0 max-w-full flex-1 gap-2 overflow-hidden">
+                        {gallery.map((imageUrl) => {
+                          const index = gallery.indexOf(imageUrl);
                           const selected = selectedImages.includes(imageUrl);
                           return (
-                            <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Usar foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleImage(imageUrl)} className={`group relative size-12 shrink-0 overflow-hidden [@media(min-height:721px)]:size-16 border-2 transition duration-200 hover:-translate-y-0.5 active:scale-95 ${selected ? "border-foreground shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-foreground/20 opacity-85 hover:opacity-100"}`}>
+                            <button key={imageUrl} type="button" aria-pressed={selected} aria-label={`Usar foto ${index + 1}${selected ? ", selecionada" : ""}`} onClick={() => toggleImage(imageUrl)} className={`group relative size-12 shrink-0 overflow-hidden border-2 transition duration-200 hover:-translate-y-0.5 active:scale-95 [@media(min-height:721px)]:size-16 ${selected ? "border-foreground shadow-[0_5px_14px_rgba(0,0,0,0.16)]" : "border-foreground/20 opacity-85 hover:opacity-100"}`}>
                               <img src={imageUrl} alt={`Foto ${index + 1} de ${product.name}`} className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
                               {selected ? <span className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-foreground text-xs text-background">✓</span> : null}
                             </button>
                           );
                         })}
+                        </div>
+                        <button type="button" aria-label="Rolar fotos para a direita" onClick={() => galleryStripRef.current?.scrollBy({ left: 180, behavior: "smooth" })} className="grid size-8 shrink-0 place-items-center border border-border transition hover:bg-muted">
+                          <ChevronRight className="size-4" />
+                        </button>
                       </div>
                     </fieldset>
                   ) : null}
@@ -1063,8 +1060,8 @@ export function VirtualTryOn({ open, product, brand = "reserva", watermark, onOp
                     </>
                   ) : (
                     <div className="mt-5 space-y-4">
-                      <SizeOptions compact label="Numeração do calçado" sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
-                      <p className="text-xs text-muted-foreground">Escolha uma foto do produto como referência.</p>
+                      <SizeOptions compact label={sizeChoiceLabel} sizes={product.sizes} value={trySize} onChange={(size) => size && setTrySize(size)} />
+                      <p className="text-xs text-muted-foreground">{product.garment === "headwear" ? "Escolha uma foto do boné como referência." : "Escolha uma foto do produto como referência."}</p>
                     </div>
                   )}
                 </div>
