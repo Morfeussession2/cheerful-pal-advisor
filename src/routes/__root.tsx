@@ -11,6 +11,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { SPELHO_SCRIPT_URL } from "../lib/spelho";
 
 function NotFoundComponent() {
   return (
@@ -91,6 +92,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
       { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&display=swap" },
     ],
+    // Script da plataforma Spelho: é ele que abre o provador da vitrine (lib/spelho.ts).
+    scripts: [{ src: SPELHO_SCRIPT_URL, async: true }],
   }),
   shellComponent: RootShell,
   component: RootComponent,

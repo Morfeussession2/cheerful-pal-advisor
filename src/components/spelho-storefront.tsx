@@ -1,11 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Ruler, Sparkles } from "lucide-react";
 
-import { VirtualTryOn, type TryOnProduct } from "@/components/virtual-try-on";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import type { SizeChartRow } from "@/lib/size-recommendation";
-import type { Watermark } from "@/lib/video-recording";
+import { openTryOn } from "@/lib/spelho";
 
 const SPELHO_LOGO = "/Spelhosvg_Prancheta%201.svg";
 const CICLO_LOGO_ICON = "https://cdn.awsli.com.br/400x300/2557/2557100/logo/200x200-logo-02-odthvc.png";
@@ -13,26 +11,26 @@ const CICLO_LOGO_WORDMARK = "https://cdn.awsli.com.br/2557/2557100/arquivos/logo
 const SIZE_CHART_IMAGE = "https://cdn.awsli.com.br/2557/2557100/arquivos/t-shirt-oversized-boxy.jpg";
 const PRODUCT_GALLERY_PAGE_SIZE = 9;
 const SIZES = ["P", "M", "G", "GG"] as const;
-// A tabela da peça é medida na largura. Convertemos ombro e barra para largura
-// total/circunferência para comparar com ombros da câmera e cintura estimada.
-const SPELHO_SIZE_CHART: readonly SizeChartRow[] = [
-  { size: "P", shoulderMaxCm: 50, waistMaxCm: 148 },
-  { size: "M", shoulderMaxCm: 52, waistMaxCm: 152 },
-  { size: "G", shoulderMaxCm: 54, waistMaxCm: 156 },
-  { size: "GG", shoulderMaxCm: 56, waistMaxCm: 160 },
-];
-const SPELHO_WATERMARK: Watermark = {
-  logoUrl: SPELHO_LOGO,
-  label: "Spelho",
-};
 
-interface SpelhoProduct extends TryOnProduct {
+// O provador é o da plataforma Spelho (src/lib/spelho.ts). A descrição de cada peça para a
+// IA, o tipo, as fotos de referência, a tabela de medidas e a logo gravada no vídeo ficam no
+// cadastro do cliente "Ciclo Arte" na plataforma; aqui fica só o que a vitrine mostra.
+interface SpelhoProduct {
   id: string;
+  name: string;
+  imageUrl: string;
+  imageUrls?: readonly string[];
+  garment: "top" | "headwear";
+  /** Grade de tamanhos, do menor para o maior. */
+  sizes: readonly string[];
+  /** Tamanho que os detalhes da peça abrem marcado. */
+  size: string;
   details: string;
   collectionLabel: string;
   genderLabel?: string;
   productUrl: string;
   sku: string;
+  /** Código do produto na loja. É por ele que a plataforma sabe qual peça abrir no provador. */
   catalogProductCode: string;
   installmentCount: number;
   installmentAmount: string;
@@ -46,8 +44,6 @@ interface SpelhoColorOption {
   id: string;
   label: string;
   swatchColor: string;
-  /** Descrição da cor em inglês, enviada junto com a descrição da peça ao prompt. */
-  promptColor: string;
   imageUrl?: string;
   imageUrls?: readonly string[];
 }
@@ -67,8 +63,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB NEO + CÏCLOarte - MERCH OFICIAL",
     genderLabel: "Unissex",
-    description:
-      "Heavyweight cotton T-shirt with a colorful photo-and-graffiti print, ribbed crew neck, dropped shoulders and broad hems. The reference model wears size GG.",
     details:
       "Uma camiseta que não fica tentando desaparecer no look. A T-Shirt Oversized NEO BXD combina a identidade do artista com uma forma ampla e estruturada. Confeccionada em malha 30 fios, tem modelagem quadrada e ampla, bainhas largas e rib canelada de 2,5 cm. O processo de amaciamento e pré-encolhimento garante toque suave e caimento impecável. Composição: 100% algodão. O modelo tem 1,87 m de altura e veste GG.",
     installmentCount: 6,
@@ -77,10 +71,9 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "185.00",
     pixPrice: "R$ 175,75",
     colors: [
-      { id: "off-white", label: "Off-white", swatchColor: "#FFFFFF", promptColor: "off-white" },
+      { id: "off-white", label: "Off-white", swatchColor: "#FFFFFF" },
     ],
     sizes: SIZES,
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -97,8 +90,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB GILSONS + CÏCLOARTE - MERCH OFICIAL DO ÁLBUM “EU VEJO LUZ”",
     genderLabel: "Unissex",
-    description:
-      "Material: smooth cotton jersey knit; texture: soft, clean, matte surface with minimal visible grain; proportions: regular-length body with wide shoulder coverage and large arm openings; fit: relaxed, boxy sleeveless fit; construction details: crew ribbed neckline, evenly spaced horizontal stripes, clean hem finishing, and a small embroidered logo near the lower hem.",
     details:
       "Regata confeccionada em malha texturizada, com modelagem boxy, comprimento abaixo da cintura, gola canelada de 2,5 cm e cavas amplas cortadas a fio. Composição: 67% algodão, 29% poliéster e 4% elastano. O tecido garante toque suave e caimento impecável.",
     installmentCount: 6,
@@ -107,10 +98,9 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "185.00",
     pixPrice: "R$ 175,75",
     colors: [
-      { id: "areia-off-white", label: "Areia e off-white", swatchColor: "#C3B091", promptColor: "beige and off-white horizontal stripes" },
+      { id: "areia-off-white", label: "Areia e off-white", swatchColor: "#C3B091" },
     ],
     sizes: SIZES,
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -127,8 +117,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "BÁSICOS COM ARTE - MODELAGENS AUTORAIS EM MALHAS PREMIUM",
     genderLabel: "Unissex",
-    description:
-      "Material: heavyweight cotton jersey; texture: dense, structured, low-stretch fabric; proportions: oversized, boxy silhouette with dropped shoulders; fit: loose oversized fit; construction details: ribbed crew neck, minimalist design, thick fabric that holds its shape and is not very flexible.",
     details:
       "A forma levemente quadrada cria estrutura sem prender o movimento. Confeccionada em malhão encorpado, tem modelagem quadrada e ampla, bainhas largas e rib canelada de 2,5 cm. O processo de amaciamento e pré-encolhimento garante toque suave e caimento impecável. Composição: 100% algodão, com gramatura acima de 280 g/m². O modelo tem 1,85 m de altura e veste G.",
     installmentCount: 6,
@@ -137,10 +125,9 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "145.00",
     pixPrice: "R$ 137,75",
     colors: [
-      { id: "off-white", label: "Off-white", swatchColor: "#FFFFFF", promptColor: "solid off-white / ivory" },
+      { id: "off-white", label: "Off-white", swatchColor: "#FFFFFF" },
     ],
     sizes: SIZES,
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -160,7 +147,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB LUEDJI LUNA + CÏCLOarte - MERCH OFICIAL DO ÁLBUM LL4",
     genderLabel: "Masculino",
-    description: "Stonewashed cotton T-shirt with a relaxed square fit, wide hems and a 2.5 cm ribbed neckline. The washing process creates a vintage finish and natural color variations.",
     details: "A estampa traz o título dos dois últimos álbuns de Luedji Luna: “Um Mar Pra Cada Um” e “Antes Que a Terra Acabe”. Feita em meia malha 30.1, tem modelagem square ampla, bainhas largas e gola canelada de 2,5 cm. A peça é pré-encolhida, amaciada e passa por lavagem estonada, que cria um visual vintage, toque macio e variações naturais de tonalidade. Composição: 100% algodão. O modelo tem 1,88 m e veste GG.",
     installmentCount: 6,
     installmentAmount: "R$ 32,50",
@@ -168,10 +154,9 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "195.00",
     pixPrice: "R$ 185,25",
     colors: [
-      { id: "marrom", label: "Marrom", swatchColor: "#B45F06", promptColor: "brown stonewashed cotton with natural tonal variations" },
+      { id: "marrom", label: "Marrom", swatchColor: "#B45F06" },
     ],
     sizes: ["P", "M", "G", "GG", "XGG"],
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -189,7 +174,6 @@ const PRODUCTS: SpelhoProduct[] = [
     ],
     garment: "headwear",
     collectionLabel: "COLLAB LUEDJI LUNA + CÏCLOarte - MERCH OFICIAL DO ÁLBUM LL4",
-    description: "Cotton dad hat with a curved brim, an embroidered album title and an adjustable circumference from 54 to 61 cm.",
     details: "O título do quarto álbum de Luedji Luna aparece bordado em uma peça para usar muito além do lançamento. Modelo dad hat com aba curva, em algodão amaciado. Tamanho ajustável: 54 a 61 cm de circunferência. Composição: 100% algodão. Arte: Guile Farias.",
     installmentCount: 6,
     installmentAmount: "R$ 22,50",
@@ -197,7 +181,7 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "135.00",
     pixPrice: "R$ 128,25",
     colors: [
-      { id: "preto", label: "Preto", swatchColor: "#000000", promptColor: "black" },
+      { id: "preto", label: "Preto", swatchColor: "#000000" },
     ],
     sizes: ["U"],
     size: "U",
@@ -222,7 +206,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB LUEDJI LUNA + CÏCLOarte - MERCH OFICIAL DO ÁLBUM LL4",
     genderLabel: "Unissex",
-    description: "Cotton T-shirt with a front deep-sea hydromedusa print and the album title on the back. Relaxed fit, wide hems and a 2.5 cm ribbed neckline; pre-shrunk, softened and lightly stonewashed.",
     details: "A estampa frontal traz a imagem de uma hidromedusa no fundo do oceano abissal, simbolizando o mar como metáfora. Nas costas, a T-shirt leva o título do álbum “Um Mar Pra Cada Um”. Feita em meia malha 30 fios, tem modelagem ampla, bainhas largas e gola canelada de 2,5 cm. A peça é pré-encolhida, amaciada e passa por processo de brush, que dá um efeito levemente estonado. Composição: 100% algodão. Arte: Guile Farias. Foto da hidromedusa: Álvaro Migotto. Os modelos vestem G; altura homem 1,85 m e mulher 1,70 m.",
     installmentCount: 6,
     installmentAmount: "R$ 33,00",
@@ -230,10 +213,9 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "198.00",
     pixPrice: "R$ 188,10",
     colors: [
-      { id: "preto", label: "Preto", swatchColor: "#000000", promptColor: "black" },
+      { id: "preto", label: "Preto", swatchColor: "#000000" },
     ],
     sizes: ["P", "M", "G", "GG", "XGG"],
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -251,7 +233,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB GILSONS + CÏCLOARTE - MERCH OFICIAL DO ÁLBUM “EU VEJO LUZ”",
     genderLabel: "Unissex",
-    description: "Cropped cotton T-shirt with a slightly square, relaxed fit and a waist-length hem. Made from pre-shrunk and softened 30-count jersey with a 2.5 cm ribbed neckline and wide hems.",
     details: "Tem música que vira abrigo. O Cropped Barra Cura nasce desse encontro entre som, memória e uma peça que entra no look sem precisar explicar muito. Cropped com modelagem levemente quadrada e comprimento na altura da cintura. Confeccionado em meia malha 30 fios, tem modelagem square ampla, gola canelada com 2,5 cm e bainhas largas. A peça é pré-encolhida e amaciada. Composição: 100% algodão.",
     installmentCount: 6,
     installmentAmount: "R$ 24,16",
@@ -259,10 +240,9 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "145.00",
     pixPrice: "R$ 137,75",
     colors: [
-      { id: "roti", label: "Roti", swatchColor: "#C6A84B", promptColor: "Roti, a warm golden tan" },
+      { id: "roti", label: "Roti", swatchColor: "#C6A84B" },
     ],
     sizes: ["PP", "P", "M", "G", "GG", "XGG"],
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -287,7 +267,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB GILSONS + CÏCLOARTE - MERCH OFICIAL DO ÁLBUM “EU VEJO LUZ”",
     genderLabel: "Unissex",
-    description: "Relaxed square-fit cotton T-shirt with wide hems and a 2.5 cm ribbed neckline. Pre-shrunk and softened for a comfortable drape.",
     details: "Algumas frases parecem ganhar outro sentido quando saem da música e entram na rua. A T-Shirt Barra Eu Vejo Luz carrega essa ideia em uma peça ampla e fácil de viver. Feita em meia malha 30 fios, tem modelagem square ampla, bainhas largas e gola canelada de 2,5 cm. A peça é pré-encolhida e amaciada. Composição: 100% algodão.",
     installmentCount: 6,
     installmentAmount: "R$ 26,50",
@@ -295,12 +274,11 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "159.00",
     pixPrice: "R$ 151,05",
     colors: [
-      { id: "preto", label: "Preto", swatchColor: "#000000", promptColor: "black" },
-      { id: "bordeaux", label: "Bordeaux", swatchColor: "#5C0120", promptColor: "deep bordeaux" },
-      { id: "indian-khaki", label: "Indian Khaki", swatchColor: "#C3B091", promptColor: "Indian khaki, a light warm beige" },
+      { id: "preto", label: "Preto", swatchColor: "#000000" },
+      { id: "bordeaux", label: "Bordeaux", swatchColor: "#5C0120" },
+      { id: "indian-khaki", label: "Indian Khaki", swatchColor: "#C3B091" },
     ],
     sizes: ["PP", "P", "M", "G", "GG", "XGG"],
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
   {
@@ -323,7 +301,6 @@ const PRODUCTS: SpelhoProduct[] = [
     garment: "top",
     collectionLabel: "COLLAB CIRCO VOADOR + CÏCLOARTE",
     genderLabel: "Unissex",
-    description: "Cotton T-shirt printed with “A Lona Que Habito”, in a relaxed, slightly elongated fit with sleeves above the elbow and a 2.5 cm ribbed collar. Pre-shrunk and softened.",
     details: "“A lona que habito” pode ser palco, casa, corpo ou tudo isso junto. A camiseta leva a frase para as ruas sem tentar explicar o que cada pessoa deve sentir. Confeccionada em meia malha 30 fios, tem modelagem ampla e levemente alongada, mangas um pouco acima do cotovelo e gola canelada de 2,5 cm. A peça é amaciada e pré-encolhida. Composição: 100% algodão. A modelo tem 1,65 m e veste P; o modelo tem 1,87 m e veste GG.",
     installmentCount: 6,
     installmentAmount: "R$ 29,66",
@@ -331,18 +308,16 @@ const PRODUCTS: SpelhoProduct[] = [
     sellPrice: "178.00",
     pixPrice: "R$ 169,10",
     colors: [
-      { id: "preto", label: "Preto", swatchColor: "#000000", promptColor: "black" },
-      { id: "branco", label: "Branco", swatchColor: "#FFFFFF", promptColor: "white" },
+      { id: "preto", label: "Preto", swatchColor: "#000000" },
+      { id: "branco", label: "Branco", swatchColor: "#FFFFFF" },
     ],
     sizes: ["P", "M", "G", "GG", "XGG"],
-    sizeChart: SPELHO_SIZE_CHART,
     size: "M",
   },
 ];
 
 export function SpelhoStorefront() {
-  const [activeProduct, setActiveProduct] = useState<TryOnProduct | null>(null);
-  const [tryOnOpen, setTryOnOpen] = useState(false);
+  const [tryOnNotice, setTryOnNotice] = useState("");
   const [detailsProduct, setDetailsProduct] = useState<SpelhoProduct | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedDetailImage, setSelectedDetailImage] = useState(0);
@@ -362,16 +337,32 @@ export function SpelhoStorefront() {
     setDetailGalleryPage(0);
   }
 
-  function startTryOn(product: SpelhoProduct, colorId?: string) {
-    const color = getSelectedColor(product, colorId);
-    setActiveProduct({
-      ...product,
-      imageUrl: color.imageUrl ?? product.imageUrl,
-      imageUrls: color.imageUrls ?? product.imageUrls,
-      description: [`Color: ${color.promptColor}.`, product.description].filter(Boolean).join(" "),
-    });
-    setTryOnOpen(true);
+  // O provador abre numa janela da plataforma, sobre esta página. A cor escolhida ainda não
+  // vai junto: hoje cada peça tem uma cor só, e a plataforma cadastra uma peça por código.
+  async function startTryOn(product: SpelhoProduct, size?: string) {
+    setTryOnNotice("");
+    const outcome = await openTryOn(product.catalogProductCode, size);
+    if (outcome === "loading") setTryOnNotice("O provador ainda está carregando. Tente de novo em instantes.");
+    if (outcome === "unavailable") setTryOnNotice("O provador não está disponível para esta peça agora. Tente de novo mais tarde.");
   }
+
+  // "Comprar" dentro do provador: a plataforma fecha a janela e avisa qual peça. A compra
+  // acontece na página do produto, na loja.
+  useEffect(() => {
+    function onBuy(event: Event) {
+      const code = (event as CustomEvent<{ product?: string }>).detail?.product;
+      const product = PRODUCTS.find((item) => item.catalogProductCode === code);
+      if (product) window.location.assign(product.productUrl);
+    }
+    window.addEventListener("spelho:buy", onBuy);
+    return () => window.removeEventListener("spelho:buy", onBuy);
+  }, []);
+
+  useEffect(() => {
+    if (!tryOnNotice) return;
+    const timer = window.setTimeout(() => setTryOnNotice(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [tryOnNotice]);
 
   function openProductDetails(product: SpelhoProduct) {
     setDetailsProduct(product);
@@ -384,9 +375,9 @@ export function SpelhoStorefront() {
 
   function tryOnFromDetails() {
     if (!detailsProduct) return;
-    const productForTryOn = { ...detailsProduct, size: selectedDetailSize };
     setDetailsOpen(false);
-    startTryOn(productForTryOn);
+    // O provador já abre com o tamanho escolhido aqui marcado.
+    void startTryOn(detailsProduct, selectedDetailSize);
   }
 
   return (
@@ -484,7 +475,7 @@ export function SpelhoStorefront() {
                   onClick={() => openProductDetails(product)}
                   className="absolute inset-0 z-10 cursor-pointer"
                 />
-                <Button type="button" onClick={() => startTryOn(product)} className="relative z-20 mt-3 h-10 w-full rounded-none bg-black px-2 text-[9px] font-medium uppercase tracking-[0.08em] text-white shadow-none hover:bg-black/80 sm:h-11 sm:text-[10px] sm:tracking-[0.12em]">
+                <Button type="button" onClick={() => void startTryOn(product)} className="relative z-20 mt-3 h-10 w-full rounded-none bg-black px-2 text-[9px] font-medium uppercase tracking-[0.08em] text-white shadow-none hover:bg-black/80 sm:h-11 sm:text-[10px] sm:tracking-[0.12em]">
                   <Sparkles className="size-3.5 shrink-0 sm:size-4" /> Experimentar
                 </Button>
               </article>
@@ -692,17 +683,10 @@ export function SpelhoStorefront() {
         </DialogContent>
       </Dialog>
 
-      {activeProduct ? (
-        <VirtualTryOn
-          open={tryOnOpen}
-          product={activeProduct}
-          brand="spelho"
-          watermark={SPELHO_WATERMARK}
-          onOpenChange={(open) => {
-            setTryOnOpen(open);
-            if (!open) setActiveProduct(null);
-          }}
-        />
+      {tryOnNotice ? (
+        <p role="status" className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-md bg-black px-4 py-3 text-center text-xs text-white shadow-lg">
+          {tryOnNotice}
+        </p>
       ) : null}
     </main>
   );
